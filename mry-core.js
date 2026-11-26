@@ -1547,48 +1547,99 @@
     };
   }
 
-  function pointToSegDist(px, py, ax, ay, bx, by) {
+  function pointToSegClosest(px, py, ax, ay, bx, by) {
     const vx = bx - ax, vy = by - ay;
     const l2 = vx * vx + vy * vy;
-    if (l2 < 1e-6) return Math.hypot(px - ax, py - ay);
+    if (l2 < 1e-6) return { dist: Math.hypot(px - ax, py - ay), cx: ax, cy: ay, t: 0 };
     const t = Math.max(0, Math.min(1, ((px - ax) * vx + (py - ay) * vy) / l2));
-    return Math.hypot(px - (ax + t * vx), py - (ay + t * vy));
+    const cx = ax + t * vx;
+    const cy = ay + t * vy;
+    return { dist: Math.hypot(px - cx, py - cy), cx, cy, t };
   }
 
-  function catmullRomToCubicPath(pts) {
+  function pointToSegDist(px, py, ax, ay, bx, by) {
+    return pointToSegClosest(px, py, ax, ay, bx, by).dist;
+  }
+
+  function segmentsIntersect(a, b, c, d) {
+    const ccw = (p1, p2, p3) => (p3.y - p1.y) * (p2.x - p1.x) - (p2.y - p1.y) * (p3.x - p1.x);
+    const d1 = ccw(c, d, a);
+    const d2 = ccw(c, d, b);
+    const d3 = ccw(a, b, c);
+    const d4 = ccw(a, b, d);
+    // Strict interior intersection (ignoring tiny shared-endpoint touches)
+    const eps = 1e-2;
+    return ((d1 > eps && d2 < -eps) || (d1 < -eps && d2 > eps)) &&
+           ((d3 > eps && d4 < -eps) || (d3 < -eps && d4 > eps));
+  }
+
+  function simplifyPolyline(pts, tol = 4.5) {
+    if (pts.length <= 2) return pts;
+    const out = [pts[0]];
+    for (let i = 1; i < pts.length - 1; i++) {
+      const prev = out[out.length - 1];
+      const cur = pts[i];
+      const next = pts[i + 1];
+      if (pointToSegDist(cur.x, cur.y, prev.x, prev.y, next.x, next.y) > tol) {
+        out.push(cur);
+      }
+    }
+    out.push(pts[pts.length - 1]);
+    return out;
+  }
+
+  function tautRoundedPath(rawPts, maxR = 20) {
+    const pts = simplifyPolyline(rawPts, 4.5);
     if (pts.length < 2) return "";
     if (pts.length === 2) {
       return `M ${pts[0].x.toFixed(1)} ${pts[0].y.toFixed(1)} L ${pts[1].x.toFixed(1)} ${pts[1].y.toFixed(1)}`;
     }
-    if (pts.length === 3) {
-      // Smooth quadratic approximation via cubic through midpoint
-      const [p0, p1, p2] = pts;
-      const c1x = p0.x + (2 / 3) * (p1.x - p0.x);
-      const c1y = p0.y + (2 / 3) * (p1.y - p0.y);
-      const c2x = p2.x + (2 / 3) * (p1.x - p2.x);
-      const c2y = p2.y + (2 / 3) * (p1.y - p2.y);
-      return `M ${p0.x.toFixed(1)} ${p0.y.toFixed(1)} C ${c1x.toFixed(1)} ${c1y.toFixed(1)}, ${c2x.toFixed(1)} ${c2y.toFixed(1)}, ${p2.x.toFixed(1)} ${p2.y.toFixed(1)}`;
-    }
-    const tension = 0.22;
     let d = `M ${pts[0].x.toFixed(1)} ${pts[0].y.toFixed(1)}`;
-    for (let i = 0; i < pts.length - 1; i++) {
-      const p0 = pts[Math.max(0, i - 1)];
+    for (let i = 1; i < pts.length - 1; i++) {
+      const p0 = pts[i - 1];
       const p1 = pts[i];
       const p2 = pts[i + 1];
-      const p3 = pts[Math.min(pts.length - 1, i + 2)];
-      const c1x = p1.x + (p2.x - p0.x) * tension;
-      const c1y = p1.y + (p2.y - p0.y) * tension;
-      const c2x = p2.x - (p3.x - p1.x) * tension;
-      const c2y = p2.y - (p3.y - p1.y) * tension;
-      d += ` C ${c1x.toFixed(1)} ${c1y.toFixed(1)}, ${c2x.toFixed(1)} ${c2y.toFixed(1)}, ${p2.x.toFixed(1)} ${p2.y.toFixed(1)}`;
+      const l1 = Math.hypot(p1.x - p0.x, p1.y - p0.y) || 1;
+      const l2 = Math.hypot(p2.x - p1.x, p2.y - p1.y) || 1;
+      const r = Math.min(maxR, l1 * 0.36, l2 * 0.36);
+      const ax = p1.x - ((p1.x - p0.x) / l1) * r;
+      const ay = p1.y - ((p1.y - p0.y) / l1) * r;
+      const bx = p1.x + ((p2.x - p1.x) / l2) * r;
+      const by = p1.y + ((p2.y - p1.y) / l2) * r;
+      d += ` L ${ax.toFixed(1)} ${ay.toFixed(1)} Q ${p1.x.toFixed(1)} ${p1.y.toFixed(1)} ${bx.toFixed(1)} ${by.toFixed(1)}`;
     }
+    const last = pts[pts.length - 1];
+    d += ` L ${last.x.toFixed(1)} ${last.y.toFixed(1)}`;
     return d;
+  }
+
+  function polylineMidpoint(pts) {
+    if (pts.length < 2) return pts[0] || { x: 0, y: 0 };
+    let total = 0;
+    const segLens = [];
+    for (let i = 0; i < pts.length - 1; i++) {
+      const l = Math.hypot(pts[i + 1].x - pts[i].x, pts[i + 1].y - pts[i].y);
+      segLens.push(l);
+      total += l;
+    }
+    let half = total * 0.5;
+    for (let i = 0; i < segLens.length; i++) {
+      if (half <= segLens[i] || i === segLens.length - 1) {
+        const t = segLens[i] > 1e-6 ? half / segLens[i] : 0.5;
+        return {
+          x: pts[i].x + (pts[i + 1].x - pts[i].x) * t,
+          y: pts[i].y + (pts[i + 1].y - pts[i].y) * t
+        };
+      }
+      half -= segLens[i];
+    }
+    return pts[Math.floor(pts.length / 2)];
   }
 
   function computeSpnArcGraph(ast, positions, opts = {}) {
     const useGravity = opts.useGravity !== false;
     const useMirrors = Boolean(opts.useMirrors);
-    const mirrorDistThreshold = typeof opts.mirrorDistThreshold === "number" ? opts.mirrorDistThreshold : 375;
+    const mirrorDistThreshold = typeof opts.mirrorDistThreshold === "number" ? opts.mirrorDistThreshold : 365;
     const MIRROR_R = 16;
     const transByName = {};
     for (const tr of ast.transitions || []) transByName[tr.name] = tr;
@@ -1626,6 +1677,7 @@
       const pDst = positions[item.dstId];
       if (!pSrc || !pDst) continue;
       const dist = Math.hypot(pDst.x - pSrc.x, pDst.y - pSrc.y);
+      item._dist = dist;
       if (useMirrors && dist > mirrorDistThreshold) {
         const gKey = `${item.trName}|${item.place}`;
         if (!mirrorGroups.has(gKey)) {
@@ -1637,147 +1689,10 @@
       }
     }
 
-    // 1b. Deterministically place Shadow/Mirror Place nodes beside their transitions with zero overlaps
-    const mirrors = [];
-    const realNodeEntries = Object.entries(positions || {});
+    // Sort direct arcs shortest-first so short structural backbone routes cleanly first,
+    // and longer arcs choose the side with fewer crossings against the backbone!
+    directArcs.sort((a, b) => a._dist - b._dist || a.id.localeCompare(b.id));
 
-    const placeMirrorNode = (trName, placeName, grpArcs) => {
-      const trPt = positions[`T:${trName}`];
-      const plPt = positions[`P:${placeName}`];
-      if (!trPt || !plPt) return null;
-
-      const prefAng = Math.atan2(plPt.y - trPt.y, plPt.x - trPt.x);
-      const rings = [124, 162, 200, 238, 276];
-      const angleOffsets = [
-        0, 0.38, -0.38, 0.76, -0.76, 1.15, -1.15, 1.55, -1.55, 1.95, -1.95, 2.35, -2.35, 2.75, -2.75, Math.PI
-      ];
-
-      let best = null;
-      for (const dist of rings) {
-        for (const aOff of angleOffsets) {
-          const ang = prefAng + aOff;
-          const cx = Math.round(trPt.x + Math.cos(ang) * dist);
-          const cy = Math.round(trPt.y + Math.sin(ang) * dist);
-
-          // Protect the host transition's own name & top-badge vertical strips
-          const relX = cx - trPt.x;
-          const relY = cy - trPt.y;
-          if (Math.abs(relX) < 82 && relY > 8 && relY < 74) continue;
-          if (Math.abs(relX) < 48 && relY < -14 && relY > -68) continue;
-
-          // Check collision against ALL real nodes (including label envelopes)
-          let blocked = false;
-          let minClear = Infinity;
-          for (const [, npt] of realNodeEntries) {
-            const dx = cx - npt.x;
-            const dy = cy - (npt.y + 10);
-            const ell = Math.hypot(dx / 96, dy / 76);
-            if (ell < 1.0) {
-              blocked = true;
-              break;
-            }
-            if (ell < minClear) minClear = ell;
-          }
-          if (blocked) continue;
-
-          // Check collision against ALL already placed mirrors (including mirror labels!)
-          for (const m of mirrors) {
-            const dx = cx - m.x;
-            const dy = cy - m.y;
-            const ell = Math.hypot(dx / 112, dy / 66);
-            if (ell < 1.0) {
-              blocked = true;
-              break;
-            }
-            if (ell < minClear) minClear = ell;
-          }
-          if (blocked) continue;
-
-          const angPen = Math.abs(aOff) * 28;
-          const clearBonus = Math.min(2.2, minClear) * -14;
-          const score = dist * 1.1 + angPen + clearBonus;
-          if (!best || score < best.score) {
-            best = { x: cx, y: cy, score };
-          }
-        }
-        if (best && dist <= 162) break;
-      }
-
-      if (!best) {
-        const idx = mirrors.length;
-        best = { x: trPt.x + ((idx % 2 === 0 ? 1 : -1) * 110), y: trPt.y - 90 - Math.floor(idx / 2) * 58 };
-      }
-
-      const mirrorId = `M:${trName}:${placeName}`;
-      const mObj = {
-        id: mirrorId,
-        trName,
-        place: placeName,
-        x: best.x,
-        y: best.y,
-        r: MIRROR_R,
-        dirs: grpArcs.map((a) => a.dir)
-      };
-      mirrors.push(mObj);
-      return mObj;
-    };
-
-    // Sort mirror groups deterministically by transition y, x then place name
-    const sortedGroups = Array.from(mirrorGroups.values()).sort((a, b) => {
-      const pa = positions[`T:${a.trName}`] || { x: 0, y: 0 };
-      const pb = positions[`T:${b.trName}`] || { x: 0, y: 0 };
-      if (pa.y !== pb.y) return pa.y - pb.y;
-      if (pa.x !== pb.x) return pa.x - pb.x;
-      return a.place.localeCompare(b.place);
-    });
-
-    const mirrorArcRouted = [];
-    for (const grp of sortedGroups) {
-      const mNode = placeMirrorNode(grp.trName, grp.place, grp.arcs);
-      if (!mNode) continue;
-      const trPt = positions[`T:${grp.trName}`];
-      const trObj = transByName[grp.trName];
-      const count = grp.arcs.length;
-
-      grp.arcs.forEach((item, aIdx) => {
-        const isOut = item.dir === "out";
-        const pS = isOut ? trPt : { x: mNode.x, y: mNode.y };
-        const pD = isOut ? { x: mNode.x, y: mNode.y } : trPt;
-        const dx = pD.x - pS.x;
-        const dy = pD.y - pS.y;
-        const dist = Math.hypot(dx, dy) || 1;
-        const nx = -dy / dist;
-        const ny = dx / dist;
-        const curveOff = count > 1 ? (aIdx === 0 ? 18 : -18) : 0;
-        const mid = { x: (pS.x + pD.x) / 2 + nx * curveOff, y: (pS.y + pD.y) / 2 + ny * curveOff };
-
-        const startPt = isOut
-          ? clipProtectedPort(trPt.x, trPt.y, false, grp.trName, trObj, mid.x, mid.y, false, useGravity)
-          : clipCircle(mNode.x, mNode.y, MIRROR_R + 2, mid.x, mid.y);
-        const endPt = isOut
-          ? clipCircle(mNode.x, mNode.y, MIRROR_R + 5, mid.x, mid.y)
-          : clipProtectedPort(trPt.x, trPt.y, false, grp.trName, trObj, mid.x, mid.y, true, useGravity);
-
-        const finalPts = count > 1 ? [startPt, mid, endPt] : [startPt, endPt];
-        const pathD = catmullRomToCubicPath(finalPts);
-        const lx = count > 1 ? mid.x : (startPt.x + endPt.x) / 2;
-        const ly = count > 1 ? mid.y : (startPt.y + endPt.y) / 2;
-
-        mirrorArcRouted.push({
-          ...item,
-          isMirrored: true,
-          mirrorId: mNode.id,
-          startPt,
-          endPt,
-          waypoints: finalPts,
-          pathD,
-          lx,
-          ly
-        });
-      });
-    }
-
-    // 1c. Pair multiplicity for remaining direct arcs
     const pairCount = {};
     for (const item of directArcs) {
       const key = [item.srcId, item.dstId].sort().join("|");
@@ -1785,37 +1700,40 @@
       pairCount[key] = (pairCount[key] || 0) + 1;
     }
 
-    // 2. Build obstacle list (negative-gravity circles around every real node + label halos + placed mirror nodes!)
+    // 2. Build node obstacle list (nodes + label protection halos)
     const obstacles = [];
     for (const [id, pt] of Object.entries(positions || {})) {
       const isPlace = id.startsWith("P:");
-      obstacles.push({
-        id,
-        x: pt.x,
-        y: pt.y,
-        r: isPlace ? 60 : 58
-      });
-      obstacles.push({
-        id,
-        x: pt.x,
-        y: pt.y + (isPlace ? 42 : 44),
-        r: 28
-      });
-    }
-    for (const m of mirrors) {
-      obstacles.push({ id: m.id, x: m.x, y: m.y, r: 34 });
-      obstacles.push({ id: m.id, x: m.x, y: m.y + 24, r: 22 });
+      obstacles.push({ id, x: pt.x, y: pt.y, r: isPlace ? 54 : 52 });
+      obstacles.push({ id, x: pt.x, y: pt.y + (isPlace ? 42 : 44), r: 27 });
     }
 
-    // Helper: route each direct arc with deterministic negative-gravity repulsion
+    // Helper: count strict crossings of candidate polyline against already-routed direct arcs
+    const countCrossingsWith = (candPts, item, routedList) => {
+      let crossings = 0;
+      for (const other of routedList) {
+        if (other.srcId === item.srcId || other.srcId === item.dstId || other.dstId === item.srcId || other.dstId === item.dstId) {
+          continue;
+        }
+        const oPts = other.waypoints;
+        for (let i = 0; i < candPts.length - 1; i++) {
+          for (let j = 0; j < oPts.length - 1; j++) {
+            if (segmentsIntersect(candPts[i], candPts[i + 1], oPts[j], oPts[j + 1])) {
+              crossings++;
+            }
+          }
+        }
+      }
+      return crossings;
+    };
+
+    // 3. Initial taut obstacle- and crossing-aware routing for direct arcs
     const pairSeen = {};
     const routed = [];
 
     for (const item of directArcs) {
       const pSrc = positions[item.srcId];
       const pDst = positions[item.dstId];
-      if (!pSrc || !pDst) continue;
-
       const totalInPair = pairCount[item.pairKey] || 1;
       const seenIdx = pairSeen[item.pairKey] || 0;
       pairSeen[item.pairKey] = seenIdx + 1;
@@ -1829,91 +1747,86 @@
       const relevantObs = useGravity
         ? obstacles.filter((o) => {
             if (o.id === item.srcId || o.id === item.dstId) return false;
-            return pointToSegDist(o.x, o.y, pSrc.x, pSrc.y, pDst.x, pDst.y) < o.r + 75;
+            return pointToSegDist(o.x, o.y, pSrc.x, pSrc.y, pDst.x, pDst.y) < o.r + 65;
           })
         : [];
-
       const directHits = relevantObs.filter((o) => pointToSegDist(o.x, o.y, pSrc.x, pSrc.y, pDst.x, pDst.y) < o.r);
 
       let waypoints;
+      let isStraight = false;
+
       if (!useGravity || (directHits.length === 0 && totalInPair === 1)) {
-        const mid = { x: (pSrc.x + pDst.x) / 2, y: (pSrc.y + pDst.y) / 2 };
-        waypoints = [pSrc, mid, pDst];
+        // Pure crisp straight line!
+        waypoints = [{ x: pSrc.x, y: pSrc.y }, { x: pDst.x, y: pDst.y }];
+        isStraight = true;
       } else if (totalInPair > 1 && directHits.length === 0) {
-        const off = (seenIdx === 0 ? 1 : -1) * 30;
-        const mid = { x: (pSrc.x + pDst.x) / 2 + nx * off, y: (pSrc.y + pDst.y) / 2 + ny * off };
-        waypoints = [pSrc, mid, pDst];
+        // Clean symmetric subtle separation for bidirectional pair (single gentle bend, not wavy!)
+        const off = (seenIdx === 0 ? 1 : -1) * 24;
+        waypoints = [
+          { x: pSrc.x, y: pSrc.y },
+          { x: (pSrc.x + pDst.x) / 2 + nx * off, y: (pSrc.y + pDst.y) / 2 + ny * off },
+          { x: pDst.x, y: pDst.y }
+        ];
       } else {
+        // Taut minimal-bend detour: only 1 or 2 interior corners (NOT 5 wavy control points!)
         const evalSide = (sideSign) => {
-          const numInner = dist > 500 ? 5 : dist > 260 ? 3 : 2;
+          const numInner = dist > 420 ? 2 : 1;
           const pts = [{ x: pSrc.x, y: pSrc.y }];
-          const baseArch = Math.min(82, Math.max(46, dist * 0.08)) + (seenIdx * 16);
+          const baseArch = Math.min(86, Math.max(48, dist * 0.11)) + seenIdx * 18;
           for (let k = 1; k <= numInner; k++) {
-            const t = k / (numInner + 1);
-            const sinW = Math.sin(Math.PI * t);
+            const t = numInner === 1 ? 0.5 : (k === 1 ? 0.28 : 0.72);
             pts.push({
-              x: pSrc.x + dx * t + nx * sideSign * baseArch * sinW,
-              y: pSrc.y + dy * t + ny * sideSign * baseArch * sinW
+              x: pSrc.x + dx * t + nx * sideSign * baseArch,
+              y: pSrc.y + dy * t + ny * sideSign * baseArch
             });
           }
           pts.push({ x: pDst.x, y: pDst.y });
 
-          const iters = 34;
-          for (let it = 0; it < iters; it++) {
+          // Fast obstacle clearance relaxation keeping segments taut
+          for (let it = 0; it < 26; it++) {
             const forces = pts.map(() => ({ fx: 0, fy: 0 }));
-
             for (let k = 1; k < pts.length - 1; k++) {
               const p = pts[k];
-
               for (const o of obstacles) {
                 if (o.id === item.srcId || o.id === item.dstId) continue;
                 const ox = p.x - o.x;
                 const oy = p.y - o.y;
                 const d = Math.hypot(ox, oy);
-                const safeR = o.r + 16;
+                const safeR = o.r + 14;
                 if (d < safeR) {
-                  const strength = Math.pow((safeR - d) / safeR, 1.5) * 28;
+                  const strength = Math.pow((safeR - d) / safeR, 1.4) * 26;
                   if (d < 4) {
                     forces[k].fx += nx * sideSign * strength;
                     forces[k].fy += ny * sideSign * strength;
                   } else {
-                    const rx = ox / d;
-                    const ry = oy / d;
+                    const rx = ox / d, ry = oy / d;
                     const align = rx * (nx * sideSign) + ry * (ny * sideSign);
-                    const ux = align >= -0.15 ? rx : nx * sideSign;
-                    const uy = align >= -0.15 ? ry : ny * sideSign;
-                    forces[k].fx += ux * strength;
-                    forces[k].fy += uy * strength;
+                    forces[k].fx += (align >= -0.15 ? rx : nx * sideSign) * strength;
+                    forces[k].fy += (align >= -0.15 ? ry : ny * sideSign) * strength;
                   }
                 }
               }
-
-              const prevP = pts[k - 1];
-              const nextP = pts[k + 1];
+              // Check segment midpoints against obstacles so chord never clips a node
+              const prevP = pts[k - 1], nextP = pts[k + 1];
               for (const segMid of [
                 { x: (prevP.x + p.x) / 2, y: (prevP.y + p.y) / 2 },
                 { x: (p.x + nextP.x) / 2, y: (p.y + nextP.y) / 2 }
               ]) {
                 for (const o of obstacles) {
                   if (o.id === item.srcId || o.id === item.dstId) continue;
-                  const ox = segMid.x - o.x;
-                  const oy = segMid.y - o.y;
-                  const d = Math.hypot(ox, oy);
+                  const d = Math.hypot(segMid.x - o.x, segMid.y - o.y);
                   const safeR = o.r + 10;
                   if (d < safeR) {
-                    const strength = ((safeR - d) / safeR) * 18;
+                    const strength = ((safeR - d) / safeR) * 20;
                     forces[k].fx += nx * sideSign * strength;
                     forces[k].fy += ny * sideSign * strength;
                   }
                 }
               }
-
-              const avgX = (prevP.x + nextP.x) / 2;
-              const avgY = (prevP.y + nextP.y) / 2;
-              forces[k].fx += (avgX - p.x) * 0.24;
-              forces[k].fy += (avgY - p.y) * 0.24;
+              // Mild tautness toward straight chord
+              forces[k].fx += ((prevP.x + nextP.x) / 2 - p.x) * 0.14;
+              forces[k].fy += ((prevP.y + nextP.y) / 2 - p.y) * 0.14;
             }
-
             for (let k = 1; k < pts.length - 1; k++) {
               pts[k].x += Math.max(-22, Math.min(22, forces[k].fx));
               pts[k].y += Math.max(-22, Math.min(22, forces[k].fy));
@@ -1927,19 +1840,20 @@
             for (const o of obstacles) {
               if (o.id === item.srcId || o.id === item.dstId) continue;
               const sd = pointToSegDist(o.x, o.y, pts[k].x, pts[k].y, pts[k + 1].x, pts[k + 1].y);
-              if (sd < o.r) penalty += (o.r - sd) * 50;
+              if (sd < o.r) penalty += (o.r - sd) * 55;
             }
           }
+          const crossings = countCrossingsWith(pts, item, routed);
           let outerBias = 0;
-          if (Math.abs(dx) > 400 && Math.abs(dy) < 120) {
+          if (Math.abs(dx) > 380 && Math.abs(dy) < 120) {
             const avgY = pts.slice(1, -1).reduce((a, p) => a + p.y, 0) / (pts.length - 2);
             for (const o of obstacles) {
               if (Math.abs(o.y - avgY) < 60 && o.x > Math.min(pSrc.x, pDst.x) && o.x < Math.max(pSrc.x, pDst.x)) {
-                outerBias += 120;
+                outerBias += 110;
               }
             }
           }
-          return { pts, score: penalty + outerBias + pathLen * 0.08 };
+          return { pts, score: penalty + crossings * 220 + outerBias + pathLen * 0.07 };
         };
 
         const candPos = evalSide(1);
@@ -1947,29 +1861,91 @@
         waypoints = candPos.score <= candNeg.score ? candPos.pts : candNeg.pts;
       }
 
-      const firstTarget = waypoints[1];
-      const lastTarget = waypoints[waypoints.length - 2];
-      const srcIsPlace = item.srcId.startsWith("P:");
-      const dstIsPlace = item.dstId.startsWith("P:");
-      const trObj = transByName[item.trName];
-
-      const startPt = clipProtectedPort(
-        pSrc.x, pSrc.y, srcIsPlace, item.srcId.slice(2), trObj, firstTarget.x, firstTarget.y, false, useGravity
-      );
-      const endPt = clipProtectedPort(
-        pDst.x, pDst.y, dstIsPlace, item.dstId.slice(2), trObj, lastTarget.x, lastTarget.y, true, useGravity
-      );
-
       routed.push({
         ...item,
         isMirrored: false,
-        waypoints,
-        startPt,
-        endPt
+        isStraight,
+        waypoints
       });
     }
 
-    // 3. Port-Zone Negative Gravity (Angular Port Spreading at every Place & Transition border!)
+    // 4. Full-Body Edge-to-Edge Negative Gravity (separates parallel/nearby line bodies cleanly!)
+    if (useGravity && routed.length > 1) {
+      const ARC_BODY_SAFE = 26;
+      for (let pass = 0; pass < 12; pass++) {
+        for (let i = 0; i < routed.length; i++) {
+          const rA = routed[i];
+          if (rA.waypoints.length <= 2) continue; // Keep clear straight arcs strictly straight!
+          for (let k = 1; k < rA.waypoints.length - 1; k++) {
+            const p = rA.waypoints[k];
+            let fx = 0, fy = 0;
+
+            // Repel from every OTHER arc's body segments
+            for (let j = 0; j < routed.length; j++) {
+              if (i === j) continue;
+              const rB = routed[j];
+              const sharesNode =
+                rA.srcId === rB.srcId || rA.srcId === rB.dstId || rA.dstId === rB.srcId || rA.dstId === rB.dstId;
+              const bPts = rB.waypoints;
+              for (let s = 0; s < bPts.length - 1; s++) {
+                const cl = pointToSegClosest(p.x, p.y, bPts[s].x, bPts[s].y, bPts[s + 1].x, bPts[s + 1].y);
+                if (sharesNode && (cl.t < 0.14 || cl.t > 0.86)) continue;
+                if (cl.dist < ARC_BODY_SAFE) {
+                  const strength = ((ARC_BODY_SAFE - cl.dist) / ARC_BODY_SAFE) * 11;
+                  if (cl.dist < 1.5) {
+                    // Deterministic tie-breaker normal
+                    const sdx = bPts[s + 1].x - bPts[s].x;
+                    const sdy = bPts[s + 1].y - bPts[s].y;
+                    const sl = Math.hypot(sdx, sdy) || 1;
+                    const sign = i < j ? 1 : -1;
+                    fx += (-sdy / sl) * sign * strength;
+                    fy += (sdx / sl) * sign * strength;
+                  } else {
+                    fx += ((p.x - cl.cx) / cl.dist) * strength;
+                    fy += ((p.y - cl.cy) / cl.dist) * strength;
+                  }
+                }
+              }
+            }
+
+            // Still respect node obstacle boundaries during body separation
+            for (const o of obstacles) {
+              if (o.id === rA.srcId || o.id === rA.dstId) continue;
+              const ox = p.x - o.x, oy = p.y - o.y;
+              const d = Math.hypot(ox, oy);
+              const safeR = o.r + 12;
+              if (d < safeR && d > 0.1) {
+                const st = ((safeR - d) / safeR) * 18;
+                fx += (ox / d) * st;
+                fy += (oy / d) * st;
+              }
+            }
+
+            p.x += Math.max(-10, Math.min(10, fx));
+            p.y += Math.max(-10, Math.min(10, fy));
+          }
+        }
+      }
+    }
+
+    // 5. Compute initial protected-frontier ports & crossing-free monotonic angular port spreading!
+    for (const r of routed) {
+      const pSrc = positions[r.srcId];
+      const pDst = positions[r.dstId];
+      const firstTarget = r.waypoints[1];
+      const lastTarget = r.waypoints[r.waypoints.length - 2];
+      const srcIsPlace = r.srcId.startsWith("P:");
+      const dstIsPlace = r.dstId.startsWith("P:");
+      const trObj = transByName[r.trName];
+
+      r.startPt = clipProtectedPort(
+        pSrc.x, pSrc.y, srcIsPlace, r.srcId.slice(2), trObj, firstTarget.x, firstTarget.y, false, useGravity
+      );
+      r.endPt = clipProtectedPort(
+        pDst.x, pDst.y, dstIsPlace, r.dstId.slice(2), trObj, lastTarget.x, lastTarget.y, true, useGravity
+      );
+    }
+
     if (useGravity) {
       const portsByNode = {};
       const addPort = (nodeId, entry) => {
@@ -1984,9 +1960,11 @@
         addPort(r.dstId, { rIdx, end: "end", angle: Math.atan2(r.endPt.y - pD.y, r.endPt.x - pD.x) });
       });
 
-      const MIN_SEP = 0.24;
+      const MIN_SEP = 0.22;
       for (const [nodeId, ports] of Object.entries(portsByNode)) {
         if (ports.length <= 1) continue;
+        // Sort monotonically by angle so adjacent ports NEVER swap/cross outside the border!
+        ports.sort((a, b) => a.angle - b.angle);
         const center = positions[nodeId];
         const isPlace = nodeId.startsWith("P:");
         const tr = !isPlace ? transByName[nodeId.slice(2)] : null;
@@ -1994,17 +1972,13 @@
         const angles = ports.map((p) => p.angle);
         for (let iter = 0; iter < 14; iter++) {
           for (let i = 0; i < angles.length; i++) {
-            for (let j = i + 1; j < angles.length; j++) {
-              let diff = angles[j] - angles[i];
-              while (diff > Math.PI) diff -= 2 * Math.PI;
-              while (diff < -Math.PI) diff += 2 * Math.PI;
-              const absD = Math.abs(diff);
-              if (absD < MIN_SEP) {
-                const push = (MIN_SEP - absD) * 0.48;
-                const dir = diff >= 0 ? 1 : -1;
-                angles[j] += dir * push;
-                angles[i] -= dir * push;
-              }
+            const j = (i + 1) % angles.length;
+            let diff = angles[j] - angles[i];
+            if (j === 0) diff += 2 * Math.PI;
+            if (diff < MIN_SEP) {
+              const push = (MIN_SEP - diff) * 0.45;
+              angles[i] -= push;
+              angles[j] += push;
             }
           }
         }
@@ -2023,25 +1997,204 @@
       }
     }
 
-    // 4. Finalize SVG paths and badge label positions
+    // Finalize direct arcs (using crisp tautRoundedPath — straight where clear, rounded corners where bent!)
     const finalDirect = routed.map((r) => {
       const finalPts = [r.startPt, ...r.waypoints.slice(1, -1), r.endPt];
-      const pathD = catmullRomToCubicPath(finalPts);
-      const midIdx = Math.floor(finalPts.length / 2);
-      const labelPt =
-        finalPts.length % 2 === 1
-          ? finalPts[midIdx]
-          : {
-              x: (finalPts[midIdx - 1].x + finalPts[midIdx].x) / 2,
-              y: (finalPts[midIdx - 1].y + finalPts[midIdx].y) / 2
-            };
+      const pathD = tautRoundedPath(finalPts, 20);
+      const labelPt = polylineMidpoint(finalPts);
       return {
         ...r,
+        finalPts,
         pathD,
         lx: labelPt.x,
         ly: labelPt.y
       };
     });
+
+    // 6. Structured, Grid-Aligned & Zero-Crossing Shadow/Mirror Place Dock Layout!
+    const mirrors = [];
+    const mirrorArcRouted = [];
+    const realNodeEntries = Object.entries(positions || {});
+
+    // Group mirror entries by host transition so inputs & outputs dock symmetrically!
+    const groupsByTrans = new Map();
+    for (const grp of mirrorGroups.values()) {
+      if (!groupsByTrans.has(grp.trName)) groupsByTrans.set(grp.trName, []);
+      groupsByTrans.get(grp.trName).push(grp);
+    }
+
+    const sortedTransNames = Array.from(groupsByTrans.keys()).sort((a, b) => {
+      const pa = positions[`T:${a}`] || { x: 0, y: 0 };
+      const pb = positions[`T:${b}`] || { x: 0, y: 0 };
+      return pa.y - pb.y || pa.x - pb.x || a.localeCompare(b);
+    });
+
+    for (const trName of sortedTransNames) {
+      const trPt = positions[`T:${trName}`];
+      const trObj = transByName[trName];
+      if (!trPt) continue;
+
+      const list = groupsByTrans.get(trName).sort((a, b) => {
+        // Order: inputs first, then outputs, then by original place Y/X
+        const aOut = a.arcs.every((x) => x.dir === "out") ? 1 : 0;
+        const bOut = b.arcs.every((x) => x.dir === "out") ? 1 : 0;
+        if (aOut !== bOut) return aOut - bOut;
+        const pa = positions[`P:${a.place}`] || { x: 0, y: 0 };
+        const pb = positions[`P:${b.place}`] || { x: 0, y: 0 };
+        return pa.y - pb.y || pa.x - pb.x || a.place.localeCompare(b.place);
+      });
+
+      // Structured architectural dock slots around the transition (grid-aligned shelves, NOT random angles!)
+      const buildDockSlots = (isOutOnly) => {
+        const shelves = [];
+        // Preferred side: inputs dock Left/Top, outputs dock Right/Bottom (fallback to all shelves if occupied)
+        const xLeft = [-122, -218];
+        const xRight = [122, 218];
+        const yRows = [-102, -36, 36, 108, -166, 174];
+        const topRowX = [-105, 0, 105, -205, 205];
+
+        // Side shelves (clean vertical columns!)
+        const primaryCols = isOutOnly ? xRight : xLeft;
+        const secondaryCols = isOutOnly ? xLeft : xRight;
+        for (const dx of primaryCols) {
+          for (const dy of yRows) shelves.push({ x: trPt.x + dx, y: trPt.y + dy, prefBonus: -22 });
+        }
+        // Top & Bottom horizontal shelves (clean horizontal rows!)
+        for (const dx of topRowX) {
+          shelves.push({ x: trPt.x + dx, y: trPt.y - 108, prefBonus: isOutOnly ? 8 : -10 });
+          shelves.push({ x: trPt.x + dx, y: trPt.y + 116, prefBonus: isOutOnly ? -10 : 8 });
+          shelves.push({ x: trPt.x + dx, y: trPt.y - 172, prefBonus: 24 });
+          shelves.push({ x: trPt.x + dx, y: trPt.y + 180, prefBonus: 24 });
+        }
+        for (const dx of secondaryCols) {
+          for (const dy of yRows) shelves.push({ x: trPt.x + dx, y: trPt.y + dy, prefBonus: 14 });
+        }
+        return shelves;
+      };
+
+      for (const grp of list) {
+        const plPt = positions[`P:${grp.place}`] || trPt;
+        const isOutOnly = grp.arcs.every((a) => a.dir === "out");
+        const candidates = buildDockSlots(isOutOnly);
+
+        let best = null;
+        for (const cand of candidates) {
+          const cx = Math.round(cand.x / 5) * 5;
+          const cy = Math.round(cand.y / 5) * 5;
+
+          // Never cover host transition's name or top tag
+          const relX = cx - trPt.x;
+          const relY = cy - trPt.y;
+          if (Math.abs(relX) < 82 && relY > 8 && relY < 76) continue;
+          if (Math.abs(relX) < 52 && relY < -14 && relY > -70) continue;
+
+          // Zero overlap with ALL real nodes (including label envelopes)
+          let blocked = false;
+          for (const [, npt] of realNodeEntries) {
+            if (Math.hypot((cx - npt.x) / 94, (cy - (npt.y + 10)) / 74) < 1.0) {
+              blocked = true;
+              break;
+            }
+          }
+          if (blocked) continue;
+
+          // Zero overlap with ALL already placed mirrors (including ↗ Name labels)
+          for (const m of mirrors) {
+            if (Math.hypot((cx - m.x) / 106, (cy - m.y) / 62) < 1.0) {
+              blocked = true;
+              break;
+            }
+          }
+          if (blocked) continue;
+
+          // Count crossings of connector (trPt -> cand) AND proximity of mirror node/label to direct arcs!
+          let crossings = 0;
+          let lineProxPen = 0;
+          for (const da of finalDirect) {
+            for (let k = 0; k < da.finalPts.length - 1; k++) {
+              const dLine = pointToSegDist(cx, cy + 8, da.finalPts[k].x, da.finalPts[k].y, da.finalPts[k + 1].x, da.finalPts[k + 1].y);
+              if (dLine < 38) lineProxPen += (38 - dLine) * 10;
+              if (da.srcId !== `T:${trName}` && da.dstId !== `T:${trName}`) {
+                if (segmentsIntersect(trPt, { x: cx, y: cy }, da.finalPts[k], da.finalPts[k + 1])) {
+                  crossings++;
+                }
+              }
+            }
+          }
+          for (const ma of mirrorArcRouted) {
+            if (ma.trName === trName) continue;
+            if (segmentsIntersect(trPt, { x: cx, y: cy }, ma.startPt, ma.endPt)) {
+              crossings++;
+            }
+          }
+
+          // Prefer close, crossing-free, direction-consistent structured dock slot
+          const dHost = Math.hypot(relX, relY);
+          const dOrig = Math.hypot(cx - plPt.x, cy - plPt.y);
+          const score = dHost * 1.15 + dOrig * 0.08 + crossings * 360 + lineProxPen + cand.prefBonus;
+          if (!best || score < best.score) {
+            best = { x: cx, y: cy, score };
+          }
+        }
+
+        if (!best) {
+          const idx = mirrors.length;
+          best = { x: trPt.x + (isOutOnly ? 130 : -130), y: trPt.y - 110 - (idx % 4) * 64 };
+        }
+
+        const mirrorId = `M:${trName}:${grp.place}`;
+        const mNode = {
+          id: mirrorId,
+          trName,
+          place: grp.place,
+          x: best.x,
+          y: best.y,
+          r: MIRROR_R,
+          dirs: grp.arcs.map((a) => a.dir)
+        };
+        mirrors.push(mNode);
+
+        // Route crisp straight (or subtle symmetric pair) connector between T and M
+        const count = grp.arcs.length;
+        grp.arcs.forEach((item, aIdx) => {
+          const isOut = item.dir === "out";
+          const pS = isOut ? trPt : { x: mNode.x, y: mNode.y };
+          const pD = isOut ? { x: mNode.x, y: mNode.y } : trPt;
+          const dx = pD.x - pS.x;
+          const dy = pD.y - pS.y;
+          const dist = Math.hypot(dx, dy) || 1;
+          const nx = -dy / dist;
+          const ny = dx / dist;
+          const curveOff = count > 1 ? (aIdx === 0 ? 15 : -15) : 0;
+          const mid = { x: (pS.x + pD.x) / 2 + nx * curveOff, y: (pS.y + pD.y) / 2 + ny * curveOff };
+
+          const startPt = isOut
+            ? clipProtectedPort(trPt.x, trPt.y, false, trName, trObj, mid.x, mid.y, false, useGravity)
+            : clipCircle(mNode.x, mNode.y, MIRROR_R + 2, mid.x, mid.y);
+          const endPt = isOut
+            ? clipCircle(mNode.x, mNode.y, MIRROR_R + 5, mid.x, mid.y)
+            : clipProtectedPort(trPt.x, trPt.y, false, trName, trObj, mid.x, mid.y, true, useGravity);
+
+          const finalPts = count > 1 ? [startPt, mid, endPt] : [startPt, endPt];
+          const pathD = tautRoundedPath(finalPts, 16);
+          const lx = count > 1 ? mid.x : startPt.x + (endPt.x - startPt.x) * 0.52;
+          const ly = count > 1 ? mid.y : startPt.y + (endPt.y - startPt.y) * 0.52;
+
+          mirrorArcRouted.push({
+            ...item,
+            isMirrored: true,
+            mirrorId: mNode.id,
+            startPt,
+            endPt,
+            waypoints: finalPts,
+            finalPts,
+            pathD,
+            lx,
+            ly
+          });
+        });
+      }
+    }
 
     return {
       arcs: [...finalDirect, ...mirrorArcRouted],
