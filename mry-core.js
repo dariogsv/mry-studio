@@ -1411,9 +1411,9 @@
     for (const lKey of Object.keys(byLayer).sort((a, b) => Number(a) - Number(b))) {
       const l = Number(lKey);
       const list = byLayer[l];
-      const startY = 240 - ((list.length - 1) * rowStep) / 2;
+      const startY = Math.max(100, 240 - ((list.length - 1) * rowStep) / 2);
       list.forEach((n, idx) => {
-        const y = Math.max(100, startY + idx * rowStep);
+        const y = startY + idx * rowStep;
         pos[n.id] = { x: 120 + l * colStep, y };
         if (y > maxMainY) maxMainY = y;
       });

@@ -73,12 +73,19 @@
     presetSelect: document.getElementById("presetSelect"),
     fileInput: document.getElementById("fileInput"),
     btnOpenFile: document.getElementById("btnOpenFile"),
+    btnExportMenu: document.getElementById("btnExportMenu"),
+    exportMenu: document.getElementById("exportMenu"),
+    resetMenuSep: document.getElementById("resetMenuSep"),
     btnResetMemory: document.getElementById("btnResetMemory"),
     autosaveBadge: document.getElementById("autosaveBadge"),
     btnExportMry: document.getElementById("btnExportMry"),
     btnExportSvg: document.getElementById("btnExportSvg"),
     btnExportPng: document.getElementById("btnExportPng"),
     btnToggleCode: document.getElementById("btnToggleCode"),
+    btnToggleInspector: document.getElementById("btnToggleInspector"),
+    btnCloseInspector: document.getElementById("btnCloseInspector"),
+    drawerBackdrop: document.getElementById("drawerBackdrop"),
+    toastHost: document.getElementById("toastHost"),
     btnWideCode: document.getElementById("btnWideCode"),
     btnCollapseCode: document.getElementById("btnCollapseCode"),
     btnFormatMry: document.getElementById("btnFormatMry"),
@@ -565,7 +572,8 @@
       const mm = String(now.getMinutes()).padStart(2, "0");
       const ss = String(now.getSeconds()).padStart(2, "0");
       dom.autosaveBadge.textContent = `💾 Salvo ${hh}:${mm}:${ss}`;
-      dom.btnResetMemory.style.display = "inline-flex";
+      dom.btnResetMemory.style.display = "flex";
+      if (dom.resetMenuSep) dom.resetMenuSep.style.display = "block";
       rebuildPresetDropdown(false);
     } catch (_) {
       dom.autosaveBadge.textContent = "";
@@ -672,7 +680,8 @@
       dom.autosaveBadge.textContent = d
         ? `💾 Restaurado (${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")})`
         : "💾 Restaurado";
-      dom.btnResetMemory.style.display = "inline-flex";
+      dom.btnResetMemory.style.display = "flex";
+      if (dom.resetMenuSep) dom.resetMenuSep.style.display = "block";
     } else {
       dom.mryEditor.value = fallbackCode;
       state.positions = {};
@@ -681,6 +690,7 @@
       loadFromCode(fallbackCode, true, false);
       dom.autosaveBadge.textContent = "";
       dom.btnResetMemory.style.display = "none";
+      if (dom.resetMenuSep) dom.resetMenuSep.style.display = "none";
     }
 
     try {
@@ -3211,7 +3221,9 @@
   // =========================================================================
   function updateTabButtons() {
     document.querySelectorAll(".tab-btn").forEach((b) => {
-      b.classList.toggle("active", b.dataset.tab === state.activeTab);
+      const isAct = b.dataset.tab === state.activeTab;
+      b.classList.toggle("active", isAct);
+      b.setAttribute("aria-selected", String(isAct));
     });
   }
 
@@ -4554,6 +4566,7 @@
       copyMdBtn.addEventListener("click", () => {
         navigator.clipboard.writeText(formalTable.markdown).then(() => {
           setParseStatus(true, `Tabela formal (${formalTable.rows.length} transições) copiada em Markdown!`);
+          showToast("Tabela copiada em Markdown!");
         });
       });
     }
@@ -4562,6 +4575,7 @@
       copyTexBtn.addEventListener("click", () => {
         navigator.clipboard.writeText(formalTable.latex).then(() => {
           setParseStatus(true, `Tabela formal (${formalTable.rows.length} transições) copiada em LaTeX (booktabs)!`);
+          showToast("Tabela copiada em LaTeX!");
         });
       });
     }
@@ -4723,19 +4737,15 @@
     const countsOk = JSON.stringify(s1) === JSON.stringify(s2);
 
     if (identical && countsOk) {
-      if (ast2.modelType === "RBD") {
-        setParseStatus(
-          true,
-          `Round-Trip RBD 100% Determinístico OK! (${s2.blocks}B, ${s2.groups}G, ${s2.spofs} SPOF)`
-        );
-      } else {
-        setParseStatus(
-          true,
-          `Round-Trip SPN 100% Determinístico OK! (${s2.places}L, ${s2.transitions}T, ${s2.totalArcs}A, ${s2.conditionalArcs} IF, ${s2.inhibitorArcs} Inib, ${s2.guardedTransitions} Guards)`
-        );
-      }
+      const okMsg =
+        ast2.modelType === "RBD"
+          ? `Round-Trip RBD OK! (${s2.blocks}B, ${s2.groups}G, ${s2.spofs} SPOF)`
+          : `Round-Trip SPN OK! (${s2.places}L, ${s2.transitions}T, ${s2.totalArcs}A)`;
+      setParseStatus(true, okMsg);
+      showToast(`✓ ${okMsg}`);
     } else {
       setParseStatus(false, "Divergência detectada no teste de round-trip!");
+      showToast("✗ Divergência no round-trip!", true);
     }
   }
 
@@ -4807,19 +4817,263 @@
   dom.mryEditor.addEventListener("click", syncCaretLine);
   dom.mryEditor.addEventListener("keyup", syncCaretLine);
 
+  function showToast(msg, isError = false) {
+    if (!dom.toastHost || !msg) return;
+    const el = document.createElement("div");
+    el.className = "toast-item" + (isError ? " err" : "");
+    el.textContent = msg;
+    dom.toastHost.innerHTML = "";
+    dom.toastHost.appendChild(el);
+    clearTimeout(state._toastTimer);
+    state._toastTimer = setTimeout(() => {
+      if (el.parentNode) el.remove();
+    }, 2400);
+  }
+
+  function isCompactViewport() {
+    return window.innerWidth < 1100;
+  }
+
+  function syncPanelButtons() {
+    const compact = isCompactViewport();
+    const codeOpen = compact
+      ? dom.workspace.classList.contains("mobile-code-open")
+      : !dom.workspace.classList.contains("hide-code");
+    const inspOpen = compact
+      ? dom.workspace.classList.contains("mobile-inspector-open")
+      : !dom.workspace.classList.contains("hide-inspector");
+
+    if (dom.btnToggleCode) {
+      dom.btnToggleCode.classList.toggle("active", codeOpen);
+      dom.btnToggleCode.setAttribute("aria-pressed", String(codeOpen));
+    }
+    if (dom.btnToggleInspector) {
+      dom.btnToggleInspector.classList.toggle("active", inspOpen);
+      dom.btnToggleInspector.setAttribute("aria-pressed", String(inspOpen));
+    }
+    if (dom.drawerBackdrop) {
+      dom.drawerBackdrop.classList.toggle("visible", compact && (codeOpen || inspOpen));
+    }
+  }
+
+  function closeAllMobileDrawers() {
+    dom.workspace.classList.remove("mobile-code-open", "mobile-inspector-open");
+    syncPanelButtons();
+  }
+
   const toggleCodePane = (forceHide = null) => {
+    if (isCompactViewport()) {
+      const open = forceHide !== null ? !forceHide : !dom.workspace.classList.contains("mobile-code-open");
+      dom.workspace.classList.remove("mobile-inspector-open");
+      dom.workspace.classList.toggle("mobile-code-open", open);
+      syncPanelButtons();
+      return;
+    }
     const hide = forceHide !== null ? forceHide : !dom.workspace.classList.contains("hide-code");
     dom.workspace.classList.toggle("hide-code", hide);
-    dom.btnToggleCode.classList.toggle("active", !hide);
+    syncPanelButtons();
     setTimeout(fitView, 190);
   };
+
+  const toggleInspectorPane = (forceHide = null) => {
+    if (isCompactViewport()) {
+      const open = forceHide !== null ? !forceHide : !dom.workspace.classList.contains("mobile-inspector-open");
+      dom.workspace.classList.remove("mobile-code-open");
+      dom.workspace.classList.toggle("mobile-inspector-open", open);
+      syncPanelButtons();
+      return;
+    }
+    const hide = forceHide !== null ? forceHide : !dom.workspace.classList.contains("hide-inspector");
+    dom.workspace.classList.toggle("hide-inspector", hide);
+    syncPanelButtons();
+    setTimeout(fitView, 190);
+  };
+
   dom.btnCollapseCode.addEventListener("click", () => toggleCodePane(true));
+  if (dom.btnToggleInspector) dom.btnToggleInspector.addEventListener("click", () => toggleInspectorPane());
+  if (dom.btnCloseInspector) dom.btnCloseInspector.addEventListener("click", () => toggleInspectorPane(true));
+  if (dom.drawerBackdrop) dom.drawerBackdrop.addEventListener("click", closeAllMobileDrawers);
   dom.btnWideCode.addEventListener("click", () => {
     dom.workspace.classList.remove("hide-code");
-    dom.btnToggleCode.classList.add("active");
     const isWide = dom.workspace.classList.toggle("wide-code");
     dom.btnWideCode.classList.toggle("active", isWide);
+    syncPanelButtons();
     setTimeout(fitView, 190);
+  });
+
+  // Export dropdown popover
+  const closeExportMenu = () => {
+    if (!dom.exportMenu || !dom.btnExportMenu) return;
+    dom.exportMenu.classList.remove("open");
+    dom.btnExportMenu.setAttribute("aria-expanded", "false");
+  };
+  if (dom.btnExportMenu && dom.exportMenu) {
+    dom.btnExportMenu.addEventListener("click", (e) => {
+      e.stopPropagation();
+      const willOpen = !dom.exportMenu.classList.contains("open");
+      dom.exportMenu.classList.toggle("open", willOpen);
+      dom.btnExportMenu.setAttribute("aria-expanded", String(willOpen));
+    });
+    document.addEventListener("click", (e) => {
+      if (!dom.exportMenu.contains(e.target) && e.target !== dom.btnExportMenu) {
+        closeExportMenu();
+      }
+    });
+  }
+
+  // Native-feeling Touch Gestures on Canvas (2-finger Pinch-Zoom + Pan, 1-finger Pan & Node Tap/Drag)
+  const touchState = { mode: null, lastDist: 0, lastMid: null, startPt: null, origView: null, nodeDrag: null, lastTap: { id: null, time: 0 } };
+  dom.svgStage.addEventListener("touchstart", (e) => {
+    // Ignore touches on floating dock / bars / legend
+    if (e.target.closest("#figmaDock, #selectionActionBar, #simActionBar, #legendOverlay")) return;
+
+    if (e.touches.length === 2) {
+      e.preventDefault();
+      const [t1, t2] = e.touches;
+      touchState.mode = "pinch";
+      touchState.nodeDrag = null;
+      touchState.lastDist = Math.hypot(t2.clientX - t1.clientX, t2.clientY - t1.clientY) || 1;
+      touchState.lastMid = { x: (t1.clientX + t2.clientX) / 2, y: (t1.clientY + t2.clientY) / 2 };
+      return;
+    }
+
+    if (e.touches.length === 1) {
+      const t = e.touches[0];
+      const nodeEl = e.target.closest(".spn-node");
+      const mirrorEl = e.target.closest(".spn-mirror");
+      const rbdEl = e.target.closest(".rbd-block, .rbd-group");
+
+      if (mirrorEl) {
+        e.preventDefault();
+        focusNodeById(`P:${mirrorEl.dataset.placeName}`);
+        renderRightPanel();
+        return;
+      }
+
+      if (rbdEl) {
+        e.preventDefault();
+        if (rbdEl.classList.contains("rbd-block")) {
+          state.selected = { type: "rbdBlock", id: rbdEl.dataset.blockName };
+        } else {
+          state.selected = { type: "rbdGroup", id: rbdEl.dataset.groupName };
+        }
+        renderCanvas();
+        renderRightPanel();
+        if (isCompactViewport()) toggleInspectorPane(false);
+        return;
+      }
+
+      if (nodeEl) {
+        e.preventDefault();
+        const kind = nodeEl.dataset.nodeKind;
+        const name = nodeEl.dataset.nodeName;
+        if (state.simMode) {
+          if (kind === "T") stepSimFire(name, false);
+          else showToast(`Lugar '${name}': ${state.simMarking ? (state.simMarking[name] ?? 0) : 0} token(s)`);
+          return;
+        }
+        const nodeId = `${kind}:${name}`;
+        const svgPt = clientToSvg(t.clientX, t.clientY);
+        const cur = state.positions[nodeId] || svgPt;
+        touchState.mode = "node";
+        touchState.nodeDrag = {
+          kind, name, nodeId,
+          startX: t.clientX, startY: t.clientY,
+          offsetX: svgPt.x - cur.x, offsetY: svgPt.y - cur.y,
+          moved: false
+        };
+        return;
+      }
+
+      // Empty canvas: 1-finger smooth Pan!
+      e.preventDefault();
+      touchState.mode = "pan";
+      touchState.startPt = { x: t.clientX, y: t.clientY };
+      touchState.origView = { x: state.view.x, y: state.view.y };
+    }
+  }, { passive: false });
+
+  dom.svgStage.addEventListener("touchmove", (e) => {
+    if (!touchState.mode) return;
+    if (touchState.mode === "pinch" && e.touches.length === 2) {
+      e.preventDefault();
+      const [t1, t2] = e.touches;
+      const dist = Math.hypot(t2.clientX - t1.clientX, t2.clientY - t1.clientY) || 1;
+      const mid = { x: (t1.clientX + t2.clientX) / 2, y: (t1.clientY + t2.clientY) / 2 };
+      const factor = touchState.lastDist / dist;
+      const rect = dom.svg.getBoundingClientRect();
+      const pt = clientToSvg(mid.x, mid.y);
+      const newW = Math.max(240, Math.min(8000, state.view.w * factor));
+      const newH = Math.max(160, Math.min(5500, state.view.h * factor));
+      const rx = (pt.x - state.view.x) / state.view.w;
+      const ry = (pt.y - state.view.y) / state.view.h;
+      const panDx = ((mid.x - touchState.lastMid.x) / rect.width) * newW;
+      const panDy = ((mid.y - touchState.lastMid.y) / rect.height) * newH;
+      state.view.x = pt.x - rx * newW - panDx;
+      state.view.y = pt.y - ry * newH - panDy;
+      state.view.w = newW;
+      state.view.h = newH;
+      dom.svg.setAttribute("viewBox", `${state.view.x} ${state.view.y} ${state.view.w} ${state.view.h}`);
+      touchState.lastDist = dist;
+      touchState.lastMid = mid;
+      return;
+    }
+
+    if (touchState.mode === "pan" && e.touches.length === 1) {
+      e.preventDefault();
+      const t = e.touches[0];
+      const rect = dom.svg.getBoundingClientRect();
+      const dx = ((t.clientX - touchState.startPt.x) / rect.width) * state.view.w;
+      const dy = ((t.clientY - touchState.startPt.y) / rect.height) * state.view.h;
+      state.view.x = touchState.origView.x - dx;
+      state.view.y = touchState.origView.y - dy;
+      dom.svg.setAttribute("viewBox", `${state.view.x} ${state.view.y} ${state.view.w} ${state.view.h}`);
+      return;
+    }
+
+    if (touchState.mode === "node" && touchState.nodeDrag && e.touches.length === 1) {
+      e.preventDefault();
+      const t = e.touches[0];
+      const nd = touchState.nodeDrag;
+      if (!nd.moved && Math.hypot(t.clientX - nd.startX, t.clientY - nd.startY) < 7) return;
+      nd.moved = true;
+      const pt = clientToSvg(t.clientX, t.clientY);
+      state.positions[nd.nodeId] = {
+        x: Math.round((pt.x - nd.offsetX) / 5) * 5,
+        y: Math.round((pt.y - nd.offsetY) / 5) * 5
+      };
+      renderCanvas();
+    }
+  }, { passive: false });
+
+  dom.svgStage.addEventListener("touchend", () => {
+    if (touchState.mode === "node" && touchState.nodeDrag) {
+      const nd = touchState.nodeDrag;
+      if (nd.moved) {
+        commitHistory();
+      } else {
+        // Quick tap on node: select it; double-tap opens Inspector bottom sheet on mobile!
+        state.selected = { type: nd.kind === "P" ? "place" : "transition", id: nd.name };
+        state.multiSelected = [];
+        renderCanvas();
+        renderRightPanel();
+        const now = Date.now();
+        if (isCompactViewport() && touchState.lastTap.id === nd.nodeId && now - touchState.lastTap.time < 360) {
+          toggleInspectorPane(false);
+        }
+        touchState.lastTap = { id: nd.nodeId, time: now };
+      }
+    }
+    touchState.mode = null;
+    touchState.nodeDrag = null;
+  });
+
+  let resizeTimer = null;
+  window.addEventListener("resize", () => {
+    clearTimeout(resizeTimer);
+    resizeTimer = setTimeout(() => {
+      syncPanelButtons();
+    }, 120);
   });
 
   dom.btnUndo.addEventListener("click", performUndo);
@@ -4851,7 +5105,10 @@
       return;
     }
     if (e.key === "Escape") {
-      if (state.simMode) exitSimMode(false);
+      closeExportMenu();
+      if (isCompactViewport() && (dom.workspace.classList.contains("mobile-code-open") || dom.workspace.classList.contains("mobile-inspector-open"))) {
+        closeAllMobileDrawers();
+      } else if (state.simMode) exitSimMode(false);
       else if (state.connectSource) cancelConnector();
       else if (state.activeTool !== "select") setTool("select");
       else {
@@ -4887,9 +5144,15 @@
     }
   });
 
-  dom.btnFormatMry.addEventListener("click", () => syncVisualToMry("Código .mry formatado deterministicamente"));
+  dom.btnFormatMry.addEventListener("click", () => {
+    syncVisualToMry("Código .mry formatado deterministicamente");
+    showToast("Código .mry formatado!");
+  });
   dom.btnCopyMry.addEventListener("click", () => {
-    navigator.clipboard.writeText(dom.mryEditor.value).then(() => setParseStatus(true, "Código .mry copiado!"));
+    navigator.clipboard.writeText(dom.mryEditor.value).then(() => {
+      setParseStatus(true, "Código .mry copiado!");
+      showToast("Código .mry copiado!");
+    });
   });
   dom.btnAutoLayout.addEventListener("click", () => {
     if (!state.ast) return;
@@ -5026,14 +5289,26 @@
 
   dom.btnExportMry.addEventListener("click", () => {
     if (!state.ast) return;
+    closeExportMenu();
     const code = Core.generateMry(state.ast, { includeLayoutComment: false });
     downloadBlob(`${state.ast.modelName || "model"}.mry`, code, "text/plain;charset=utf-8");
+    showToast(`Baixado ${state.ast.modelName || "model"}.mry`);
   });
   dom.btnExportSvg.addEventListener("click", () => {
     if (!state.ast) return;
+    closeExportMenu();
     downloadBlob(`${state.ast.modelName || "model"}.svg`, buildStandaloneSvg(), "image/svg+xml;charset=utf-8");
+    showToast(`Exportado ${state.ast.modelName || "model"}.svg`);
   });
-  dom.btnExportPng.addEventListener("click", exportPng);
+  dom.btnExportPng.addEventListener("click", () => {
+    closeExportMenu();
+    exportPng();
+    showToast(`Exportando ${state.ast.modelName || "model"}.png...`);
+  });
+  dom.btnResetMemory.addEventListener("click", () => {
+    closeExportMenu();
+    showToast("Memória restaurada para o original");
+  });
 
   // Preset & Saved-File Memory Selector
   dom.presetSelect.addEventListener("change", () => {
@@ -5053,7 +5328,10 @@
   });
 
   // Boot: restore last active file from indexed memory if available, else default preset
-  dom.btnToggleCode.classList.add("active");
+  if (window.innerWidth < 900 && dom.legendOverlay) {
+    dom.legendOverlay.dataset.collapsed = "1";
+  }
+  syncPanelButtons();
   rebuildPresetDropdown(false);
   let booted = false;
   try {

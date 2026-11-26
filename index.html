@@ -2,124 +2,173 @@
 <html lang="pt-BR">
 <head>
   <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>MRY Visual Studio — Conversor Determinístico MRY ↔ Visual (SPN/Mercury)</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+  <title>MRY Visual Studio — Conversor Determinístico MRY ↔ Visual (SPN/RBD)</title>
   <link rel="manifest" href="manifest.webmanifest" />
   <meta name="theme-color" content="#0b1120" />
   <link rel="stylesheet" href="styles.css" />
 </head>
 <body>
-  <header class="topbar">
+  <header class="topbar" role="banner">
     <div class="brand">
-      <span>MRY Visual Studio</span>
-      <span class="brand-badge">DETERMINÍSTICO MRY ↔ VISUAL</span>
+      <span class="brand-logo" aria-hidden="true">
+        <svg viewBox="0 0 24 24" fill="none">
+          <circle cx="6.5" cy="12" r="4" stroke="#38bdf8" stroke-width="2.1"/>
+          <rect x="15.5" y="6.5" width="4.5" height="11" rx="1.2" fill="#818cf8"/>
+          <path d="M10.8 12H14.5" stroke="#e2e8f0" stroke-width="1.8" stroke-linecap="round"/>
+        </svg>
+      </span>
+      <span class="brand-title">MRY Studio</span>
+      <span class="brand-badge">MRY ↔ VISUAL</span>
     </div>
+
+    <div class="topbar-center">
+      <select id="presetSelect" aria-label="Selecionar modelo ou arquivo salvo" title="Carregar modelo ou memória salva"></select>
+      <span id="autosaveBadge" class="autosave-badge" title="Memória automática indexada por arquivo"></span>
+    </div>
+
     <div class="topbar-controls">
-      <select id="presetSelect" title="Carregar modelo do repositório ou memória salva"></select>
-      <input type="file" id="fileInput" accept=".mry,.txt" style="display:none" />
-      <button class="btn" id="btnOpenFile" title="Abrir arquivo .mry do computador">Abrir .mry</button>
-      <button class="btn sm" id="btnResetMemory" title="Descartar autosave deste arquivo e restaurar original" style="display:none;">↺ Resetar</button>
-      <span id="autosaveBadge" style="font-size:11px;color:#86efac;white-space:nowrap;padding:0 4px;" title="Memória automática indexada por arquivo"></span>
-      <button class="btn primary" id="btnExportMry" title="Baixar .mry limpo (UTF-8 sem BOM, pronto para Mercury 6.2 CLI)">Baixar .mry</button>
-      <button class="btn" id="btnExportSvg" title="Exportar diagrama vetorial SVG (pronto para LaTeX/Overleaf)">Exportar SVG</button>
-      <button class="btn" id="btnExportPng" title="Exportar imagem PNG em alta resolução (3x)">Exportar PNG</button>
-      <button class="btn" id="btnToggleCode" title="Mostrar/ocultar editor de código .mry">Código .mry</button>
+      <input type="file" id="fileInput" accept=".mry,.txt" hidden />
+      <button class="btn icon-only-sm" id="btnOpenFile" title="Abrir arquivo .mry do dispositivo" aria-label="Abrir arquivo .mry">
+        <svg viewBox="0 0 20 20" fill="none" class="btn-ico"><path d="M3 6.5C3 5.7 3.7 5 4.5 5H8.2L9.8 6.8H15.5C16.3 6.8 17 7.5 17 8.3V14.5C17 15.3 16.3 16 15.5 16H4.5C3.7 16 3 15.3 3 14.5V6.5Z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/></svg>
+        <span class="lbl-md">Abrir</span>
+      </button>
+
+      <div class="dropdown-wrap">
+        <button class="btn primary" id="btnExportMenu" aria-haspopup="menu" aria-expanded="false" title="Exportar .mry, SVG, PNG ou gerenciar memória">
+          <svg viewBox="0 0 20 20" fill="none" class="btn-ico"><path d="M10 3.5V12.5M10 12.5L6.5 9M10 12.5L13.5 9M4 14.5V15.5C4 16.1 4.4 16.5 5 16.5H15C15.6 16.5 16 16.1 16 15.5V14.5" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          <span class="lbl-sm">Exportar</span>
+          <span class="caret" aria-hidden="true">▾</span>
+        </button>
+        <div class="dropdown-menu" id="exportMenu" role="menu" aria-label="Opções de exportação">
+          <button class="menu-item" id="btnExportMry" role="menuitem">
+            <strong>Baixar .mry</strong>
+            <span>UTF-8 sem BOM, pronto para Mercury CLI</span>
+          </button>
+          <button class="menu-item" id="btnExportSvg" role="menuitem">
+            <strong>Exportar SVG vetorial</strong>
+            <span>Diagrama limpo + legenda para LaTeX/Overleaf</span>
+          </button>
+          <button class="menu-item" id="btnExportPng" role="menuitem">
+            <strong>Exportar PNG (alta resolução)</strong>
+            <span>Imagem 2.5× pronta para slides e relatórios</span>
+          </button>
+          <div class="menu-sep" id="resetMenuSep" style="display:none;"></div>
+          <button class="menu-item danger" id="btnResetMemory" role="menuitem" style="display:none;">
+            <strong>↺ Resetar autosave</strong>
+            <span>Restaura versão original deste modelo</span>
+          </button>
+        </div>
+      </div>
+
+      <button class="btn" id="btnToggleCode" aria-pressed="true" title="Mostrar ou esconder editor de código .mry">
+        <svg viewBox="0 0 20 20" fill="none" class="btn-ico"><path d="M7 6.5L3.5 10L7 13.5M13 6.5L16.5 10L13 13.5M11 4.5L9 15.5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        <span class="lbl-md">Código</span>
+      </button>
+
+      <button class="btn" id="btnToggleInspector" aria-pressed="true" title="Mostrar ou esconder painel Inspetor / Auditoria">
+        <svg viewBox="0 0 20 20" fill="none" class="btn-ico"><rect x="3" y="4" width="14" height="12" rx="2" stroke="currentColor" stroke-width="1.6"/><path d="M12 4V16" stroke="currentColor" stroke-width="1.6"/></svg>
+        <span class="lbl-md">Inspetor</span>
+      </button>
     </div>
   </header>
 
   <main class="workspace" id="workspace">
-    <!-- LEFT: MRY SOURCE CODE (COLLAPSIBLE, EXPANDABLE, SYNTAX HIGHLIGHTED & CROSS-LINKED) -->
-    <section class="pane pane-code">
+    <!-- MOBILE/TABLET DRAWER BACKDROP -->
+    <div class="drawer-backdrop" id="drawerBackdrop" aria-hidden="true"></div>
+
+    <!-- LEFT (DRAWER ON MOBILE/TABLET): MRY SOURCE CODE -->
+    <aside class="pane pane-code" id="paneCode" aria-label="Editor de código Mercury">
       <div class="pane-header">
         <span>Código Mercury (.mry)</span>
-        <div style="display:flex; gap:4px;">
-          <button class="btn sm" id="btnWideCode" title="Expandir/reduzir largura do painel de código">⬌</button>
+        <div class="pane-header-actions">
+          <button class="btn sm hide-mobile" id="btnWideCode" title="Expandir ou reduzir largura do painel de código">⬌</button>
           <button class="btn sm" id="btnFormatMry" title="Regerar código formatado a partir da AST">Formatar</button>
           <button class="btn sm" id="btnCopyMry" title="Copiar .mry para a área de transferência">Copiar</button>
-          <button class="btn sm" id="btnCollapseCode" title="Esconder painel de código">✕</button>
+          <button class="btn sm" id="btnCollapseCode" aria-label="Fechar editor de código" title="Esconder painel de código">✕</button>
         </div>
       </div>
       <div class="code-editor-wrap">
         <div class="code-stage">
-          <div class="code-gutter" id="mryGutter"></div>
+          <div class="code-gutter" id="mryGutter" aria-hidden="true"></div>
           <div class="code-surface">
             <pre id="mryHighlight" aria-hidden="true"></pre>
-            <textarea id="mryEditor" spellcheck="false" autocomplete="off" autocorrect="off" autocapitalize="off"></textarea>
+            <textarea id="mryEditor" aria-label="Código fonte MRY" spellcheck="false" autocomplete="off" autocorrect="off" autocapitalize="off"></textarea>
           </div>
         </div>
-        <div class="parse-status ok" id="parseStatus">
+        <div class="parse-status ok" id="parseStatus" role="status" aria-live="polite">
           <span id="parseStatusText">Sincronizado</span>
           <span id="parseStatsMini"></span>
         </div>
       </div>
-    </section>
+    </aside>
 
-    <!-- CENTER: INTERACTIVE BIDIRECTIONAL SPN/RBD CANVAS WITH FIGMA FLOATING DOCK -->
-    <section class="pane pane-canvas">
-      <div class="filter-bar">
-        <span style="color:#94a3b8;font-weight:600;">Foco:</span>
-        <div id="branchChips" style="display:flex;gap:4px;flex-wrap:wrap;"></div>
-        <div class="toolbar-sep"></div>
+    <!-- CENTER (ALWAYS FULL CANVAS ON MOBILE): INTERACTIVE SPN/RBD STAGE -->
+    <section class="pane pane-canvas" aria-label="Canvas visual do modelo">
+      <div class="filter-bar" role="toolbar" aria-label="Filtros e visualização">
+        <span class="filter-label">Foco:</span>
+        <div id="branchChips" class="chip-strip"></div>
+        <div class="toolbar-sep" aria-hidden="true"></div>
         <label class="toggle-label" title="Exibe [∞] / [1], guards, prioridades e valores resolvidos nos nós">
-          <input type="checkbox" id="chkShowMeta" checked /> Guards &amp; ServerType
+          <input type="checkbox" id="chkShowMeta" checked /> Guards
         </label>
-        <label class="toggle-label" title="Campo de gravidade negativa: desvia setas de nós intermediários e protege nomes/tags">
-          <input type="checkbox" id="chkGravity" checked /> Desvio Repulsivo
+        <label class="toggle-label" title="Gravidade negativa: desvia setas de nós e afasta linhas próximas">
+          <input type="checkbox" id="chkGravity" checked /> Desvio
         </label>
-        <label class="toggle-label" id="lblMirrors" title="Substitui arcos longos por Lugares-Espelho compactos (↗) ao lado da transição — sem alterar o .mry">
+        <label class="toggle-label" id="lblMirrors" title="Substitui arcos longos por Lugares-Espelho compactos (↗) — sem alterar o .mry">
           <input type="checkbox" id="chkMirrors" /> 🔗 Espelhos
         </label>
         <label class="toggle-label" title="Estilo preto e branco pronto para publicação IEEE/Overleaf">
-          <input type="checkbox" id="chkIeeeMode" /> Modo IEEE P&amp;B
+          <input type="checkbox" id="chkIeeeMode" /> IEEE P&amp;B
         </label>
-        <select id="arcLabelMode" title="Como exibir pesos condicionais IF(...) nos arcos" style="padding:2px 6px;font-size:11px;">
-          <option value="tag">Arcos IF: Códigos w₁..wₙ + Legenda</option>
-          <option value="summary">Arcos IF: Resumo legível inline</option>
-          <option value="full">Arcos IF: Expressão completa inline</option>
+        <select id="arcLabelMode" aria-label="Modo de rótulo de arcos condicionais" title="Como exibir pesos condicionais IF(...) nos arcos" class="compact-select">
+          <option value="tag">IF: w₁..wₙ + Legenda</option>
+          <option value="summary">IF: Resumo inline</option>
+          <option value="full">IF: Completo inline</option>
         </select>
-        <div style="margin-left:auto;display:flex;gap:4px;">
+        <div class="filter-actions">
           <button class="btn sm" id="btnAutoLayout" title="Reorganizar layout determinístico simétrico">Auto-Layout</button>
-          <button class="btn sm" id="btnFitView" title="Ajustar zoom para caber todo o modelo">Ajustar Tela</button>
-          <button class="btn sm" id="btnRoundTrip" title="Testar integridade determinística MRY -> AST -> MRY">Ida-e-Volta</button>
+          <button class="btn sm" id="btnFitView" title="Ajustar zoom para caber todo o modelo">Ajustar</button>
+          <button class="btn sm" id="btnRoundTrip" title="Testar integridade determinística MRY → AST → MRY">Ida-e-Volta</button>
         </div>
       </div>
 
       <div class="svg-stage" id="svgStage">
-        <svg id="spnSvg" xmlns="http://www.w3.org/2000/svg"></svg>
+        <svg id="spnSvg" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Diagrama do modelo Mercury"></svg>
         <div class="canvas-hint" id="canvasHint">
           Arraste no vazio: selecionar em caixa • Espaço/Botão meio: Pan • Clique rápido: conectar • Segurar: mover
         </div>
         <div class="canvas-legend-overlay" id="legendOverlay" style="display:none;"></div>
 
         <!-- CONTEXTUAL MULTI-SELECTION FLOATING BAR -->
-        <div class="selection-action-bar" id="selectionActionBar">
+        <div class="selection-action-bar" id="selectionActionBar" role="toolbar" aria-label="Ações de seleção múltipla">
           <span class="sel-count" id="selActionCount">0 selecionados</span>
-          <button class="btn sm primary" id="btnFloatNewZone" title="Agrupar os itens selecionados em uma nova Área">⬚ Criar Área</button>
+          <button class="btn sm primary" id="btnFloatNewZone" title="Agrupar os itens selecionados em uma nova Área">⬚ Área</button>
           <button class="btn sm" id="btnFloatClone" title="Duplicar bloco selecionado + arcos internos">⧉ Duplicar</button>
-          <button class="btn sm" id="btnFloatAlignY" title="Alinhar horizontalmente no mesmo eixo Y">⋯ Alinhar H</button>
-          <button class="btn sm" id="btnFloatAlignX" title="Alinhar verticalmente no mesmo eixo X">⫶ Alinhar V</button>
+          <button class="btn sm" id="btnFloatAlignY" title="Alinhar horizontalmente no mesmo eixo Y">⋯ H</button>
+          <button class="btn sm" id="btnFloatAlignX" title="Alinhar verticalmente no mesmo eixo X">⫶ V</button>
           <button class="btn sm danger" id="btnFloatDelete" title="Apagar todos os itens selecionados (Del)">🗑 Apagar</button>
         </div>
 
         <!-- TOKEN GAME FLOATING SIMULATION BAR -->
-        <div class="sim-action-bar" id="simActionBar">
-          <span class="sim-pill" id="simStepBadge">🎮 Passo #0</span>
+        <div class="sim-action-bar" id="simActionBar" role="toolbar" aria-label="Controles do Token Game">
+          <span class="sim-pill" id="simStepBadge">🎮 #0</span>
           <span class="sim-status" id="simEnabledBadge">0 habilitadas</span>
           <button class="btn sm sim-primary" id="btnSimStep" title="Disparar uma transição habilitada aleatoriamente">🎲 Passo</button>
           <button class="btn sm" id="btnSimStep5" title="Executar 5 disparos válidos em sequência">⏩ ×5</button>
-          <button class="btn sm" id="btnSimBack" title="Desfazer último disparo">↶ Voltar</button>
+          <button class="btn sm" id="btnSimBack" title="Desfazer último disparo">↶</button>
           <button class="btn sm" id="btnSimReset" title="Reiniciar marcação inicial M₀">↺ M₀</button>
           <label class="toggle-label" title="Prioridade estrita para transições imediatas (semântica GSPN/Mercury)" style="background:rgba(15,23,42,0.55);padding:3px 6px;">
             <input type="checkbox" id="chkSimImmPrio" checked /> Imed.
           </label>
-          <button class="btn sm danger" id="btnSimExit" title="Sair do modo Simulação (Esc)">✕ Sair</button>
+          <button class="btn sm danger" id="btnSimExit" title="Sair do modo Simulação (Esc)">✕</button>
         </div>
 
-        <!-- FIGMA-STYLE FLOATING TOOL DOCK -->
-        <div class="figma-dock" id="figmaDock">
-          <div id="spnToolbar" style="display:flex;align-items:center;gap:6px;">
-            <div class="tool-group" title="Modo principal: clique e segure para mover; clique rápido para puxar conector; arraste no vazio para selecionar">
-              <button class="icon-btn active" data-tool="select" title="Selecionar / Mover / Conectar [V]">
+        <!-- FIGMA-STYLE FLOATING TOOL DOCK (TOUCH-SCROLLABLE ON MOBILE) -->
+        <div class="figma-dock" id="figmaDock" role="toolbar" aria-label="Ferramentas de edição">
+          <div id="spnToolbar" class="dock-segment">
+            <div class="tool-group" title="Modo principal: segurar para mover; clique rápido para conectar; arrastar no vazio para selecionar">
+              <button class="icon-btn active" data-tool="select" aria-label="Selecionar" title="Selecionar / Mover / Conectar [V]">
                 <svg viewBox="0 0 20 20" fill="none"><path d="M4.5 3.5L15.5 10L10.2 11.4L8.5 16.5L4.5 3.5Z" fill="currentColor" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/></svg>
               </button>
             </div>
@@ -159,12 +208,12 @@
             </div>
 
             <div class="tool-group">
-              <button class="icon-btn danger" data-tool="delete" title="Apagar selecionado ou clicar para apagar [Del]">
+              <button class="icon-btn danger" data-tool="delete" aria-label="Apagar" title="Apagar selecionado ou clicar para apagar [Del]">
                 <svg viewBox="0 0 20 20" fill="none"><path d="M4.5 6H15.5M7.5 6V4.5C7.5 4 8 3.5 8.5 3.5H11.5C12 3.5 12.5 4 12.5 4.5V6M6.5 6L7.2 15.8C7.2 16.3 7.6 16.7 8.1 16.7H11.9C12.4 16.7 12.8 16.3 12.8 15.8L13.5 6" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
               </button>
             </div>
 
-            <div class="tool-group" title="Token Game: simule disparos passo a passo, guards, arcos IF(...) e conservação de tokens">
+            <div class="tool-group" title="Token Game: simule disparos passo a passo, guards, arcos IF(...) e conservação">
               <button class="icon-btn" id="btnToggleSim" title="Modo Token Game (Simular disparos) [S]">
                 <svg viewBox="0 0 20 20" fill="none"><path d="M5.5 4.2L15.8 10L5.5 15.8V4.2Z" fill="currentColor" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/></svg>
                 <span>Simular</span>
@@ -172,7 +221,7 @@
             </div>
           </div>
 
-          <div id="rbdToolbar" style="display:none;align-items:center;gap:5px;">
+          <div id="rbdToolbar" class="dock-segment" style="display:none;">
             <div class="tool-group">
               <button class="icon-btn" id="btnRbdAddBlock" title="Adicionar componente exponencial (MTTF/MTTR)"><span>+ Bloco</span></button>
               <button class="icon-btn" id="btnRbdAddHier" title="Adicionar bloco hierárquico (R/A)"><span>+ Hier.</span></button>
@@ -187,10 +236,10 @@
           </div>
 
           <div class="tool-group">
-            <button class="icon-btn" id="btnUndo" title="Desfazer última ação (Ctrl+Z)" disabled>
+            <button class="icon-btn" id="btnUndo" aria-label="Desfazer" title="Desfazer última ação (Ctrl+Z)" disabled>
               <svg viewBox="0 0 20 20" fill="none"><path d="M7.5 6.5L3.8 10L7.5 13.5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/><path d="M4.2 10H12.2C14.6 10 16.5 11.7 16.5 13.8C16.5 15.1 15.6 16.2 14.2 16.5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
             </button>
-            <button class="icon-btn" id="btnRedo" title="Refazer ação desfeita (Ctrl+Y / Ctrl+Shift+Z)" disabled>
+            <button class="icon-btn" id="btnRedo" aria-label="Refazer" title="Refazer ação desfeita (Ctrl+Y / Ctrl+Shift+Z)" disabled>
               <svg viewBox="0 0 20 20" fill="none"><path d="M12.5 6.5L16.2 10L12.5 13.5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/><path d="M15.8 10H7.8C5.4 10 3.5 11.7 3.5 13.8C3.5 15.1 4.4 16.2 5.8 16.5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
             </button>
           </div>
@@ -198,19 +247,24 @@
       </div>
     </section>
 
-    <!-- RIGHT: INSPECTOR, MANIFEST ("NADA ESCONDIDO"), PARAMS/METRICS & AUDIT -->
-    <section class="pane">
-      <div class="tabs">
-        <button class="tab-btn active" data-tab="inspector">Inspetor</button>
-        <button class="tab-btn" data-tab="manifest">Nada Escondido</button>
-        <button class="tab-btn" data-tab="params">Parâmetros</button>
-        <button class="tab-btn" data-tab="audit">Auditoria</button>
+    <!-- RIGHT (BOTTOM SHEET ON MOBILE, DRAWER ON TABLET): INSPECTOR, MANIFEST, PARAMS & AUDIT -->
+    <aside class="pane pane-inspector" id="paneInspector" aria-label="Inspetor e auditoria">
+      <div class="sheet-handle-bar">
+        <span class="sheet-pill" aria-hidden="true"></span>
+        <button class="btn sm sheet-close" id="btnCloseInspector" aria-label="Fechar painel inspetor" title="Fechar painel">✕</button>
+      </div>
+      <div class="tabs" role="tablist" aria-label="Abas do inspetor">
+        <button class="tab-btn active" role="tab" aria-selected="true" data-tab="inspector">Inspetor</button>
+        <button class="tab-btn" role="tab" aria-selected="false" data-tab="manifest">Manifesto</button>
+        <button class="tab-btn" role="tab" aria-selected="false" data-tab="params">Parâmetros</button>
+        <button class="tab-btn" role="tab" aria-selected="false" data-tab="audit">Auditoria</button>
       </div>
       <div class="tab-body" id="tabBody"></div>
-    </section>
+    </aside>
   </main>
 
-  <div id="svgTooltip"></div>
+  <div id="svgTooltip" role="tooltip"></div>
+  <div id="toastHost" class="toast-host" aria-live="polite"></div>
 
   <script src="mry-core.js"></script>
   <script src="presets.js"></script>
