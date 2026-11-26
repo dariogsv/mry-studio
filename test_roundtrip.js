@@ -20,7 +20,7 @@ function report(ok, name, detail) {
   console.log(`${ok ? "PASS" : "FAIL"} | ${name.padEnd(36)} | ${detail}`);
 }
 
-// 1. Round-trip idempotency for every built-in public preset (SPN & RBD)
+// 1. Round-trip idempotency for every built-in textbook preset (SPN & RBD)
 assert(PRESETS.length >= 4, "Expected at least 4 built-in presets");
 for (const pr of PRESETS) {
   const ast1 = Core.parseMry(pr.code);
@@ -105,67 +105,52 @@ const exprOk =
   Core.evalMercuryBool("(#P1>=2)AND(#Lock=1)", { P1: 1, Lock: 1 }, {}) === false &&
   Core.evalMercuryBool("(#A=0)OR(#B>2)", { A: 1, B: 3 }, {}) === true &&
   Core.evalMercuryBool("NOT(#A=1)", { A: 0 }, {}) === true &&
-  Core.evalMercuryNumeric("IF(#InService>0):(1)ELSE(0)", { InService: 1 }, {}) === 1 &&
-  Core.evalMercuryNumeric("IF(#InService>0):(1)ELSE(0)", { InService: 0 }, {}) === 0 &&
+  Core.evalMercuryNumeric("IF(#Active_Up=0):(1)ELSE(0)", { Active_Up: 0 }, {}) === 1 &&
+  Core.evalMercuryNumeric("IF(#Active_Up>0):(1)ELSE(0)", { Active_Up: 1 }, {}) === 1 &&
   Core.evalMercuryNumeric("IF(#X>5):(3)IF(#X>0):(2)ELSE(0)", { X: 2 }, {}) === 2;
 report(exprOk, "MERCURY_EXPRESSION_EVALUATOR", `guards & chained IF/ELSE ok=${exprOk}`);
 
-// 4. Token Game normal ACK cycle + Timeout/Recycle cycle on spn_client_server_timeout
-const spnTimeoutAst = Core.parseMry(PRESETS.find((p) => p.id === "spn_client_server_timeout").code);
-const m0 = Core.createInitialMarking(spnTimeoutAst);
-
-let mAck = { ...m0 };
-let ackOk = true;
-for (const trName of ["GenerateRequest", "SendRequest", "AcquireServer", "ProcessRequest", "ReceiveAck"]) {
-  const en = Core.getEnabledTransitions(spnTimeoutAst, mAck, true);
+// 4. Token Game full cycle on M/M/1/K queue (Arrival -> immediate StartService -> FinishService -> M0)
+const mm1kAst = Core.parseMry(PRESETS.find((p) => p.id === "spn_mm1k_queue").code);
+const m0Queue = Core.createInitialMarking(mm1kAst);
+let mQ = { ...m0Queue };
+let qOk = true;
+for (const trName of ["Arrival", "StartService", "FinishService"]) {
+  const en = Core.getEnabledTransitions(mm1kAst, mQ, true);
   if (!en.fireable.has(trName)) {
-    ackOk = false;
+    qOk = false;
     break;
   }
-  mAck = Core.fireTransition(spnTimeoutAst, trName, mAck).marking;
+  mQ = Core.fireTransition(mm1kAst, trName, mQ).marking;
 }
-ackOk = ackOk && JSON.stringify(mAck) === JSON.stringify(m0);
-report(ackOk, "TOKEN_GAME_ACK_CYCLE", `returnedToM0=${ackOk}`);
+qOk = qOk && JSON.stringify(mQ) === JSON.stringify(m0Queue);
+report(qOk, "TOKEN_GAME_MM1K_CYCLE", `returnedToM0=${qOk}`);
 
-let mTo = { ...m0 };
-let toOk = true;
-for (const trName of ["GenerateRequest", "SendRequest", "AcquireServer", "RequestTimeout", "RecycleTimeout"]) {
-  const en = Core.getEnabledTransitions(spnTimeoutAst, mTo, true);
-  if (!en.fireable.has(trName)) {
-    toOk = false;
-    break;
-  }
-  mTo = Core.fireTransition(spnTimeoutAst, trName, mTo).marking;
-}
-const invTo = Core.detectConservationInvariants(spnTimeoutAst, m0, mTo);
-toOk = toOk && invTo.every((i) => i.ok) && JSON.stringify(mTo) === JSON.stringify(m0);
-report(toOk, "TOKEN_GAME_TIMEOUT_RECYCLE", `invOk=${invTo.every((i) => i.ok)} returnedToM0=${toOk}`);
-
-// 5. Token Game inhibitor & guard preemption on spn_ha_guard_inhibitor
-const spnHaAst = Core.parseMry(PRESETS.find((p) => p.id === "spn_ha_guard_inhibitor").code);
-let mHa = Core.createInitialMarking(spnHaAst);
-const enHa0 = Core.getEnabledTransitions(spnHaAst, mHa, true);
-const inhBlockedInitially = !enHa0.fireable.has("ActivateBackup");
-mHa = Core.fireTransition(spnHaAst, "FailPrimary", mHa).marking;
-const enHa1 = Core.getEnabledTransitions(spnHaAst, mHa, true);
-const enabledAfterFail = enHa1.fireable.has("ActivateBackup");
-mHa = Core.fireTransition(spnHaAst, "ActivateBackup", mHa).marking;
-mHa = Core.fireTransition(spnHaAst, "RepairPrimary", mHa).marking;
-const enHa2 = Core.getEnabledTransitions(spnHaAst, mHa, true);
-const immPreempts = enHa2.immPreempting && enHa2.fireable.has("RestorePrimary");
-const haOk = inhBlockedInitially && enabledAfterFail && immPreempts;
-report(haOk, "TOKEN_GAME_GUARD_INHIBITOR_IMM", `inh=${inhBlockedInitially} fail=${enabledAfterFail} imm=${immPreempts}`);
+// 5. Token Game inhibitor, deterministic switchover & conditional IF/ELSE repair on Cold Standby
+const csAst = Core.parseMry(PRESETS.find((p) => p.id === "spn_cold_standby").code);
+const m0Cs = Core.createInitialMarking(csAst);
+let mCs = { ...m0Cs };
+const enCs0 = Core.getEnabledTransitions(csAst, mCs, true);
+const inhBlocked = !enCs0.fireable.has("Switchover");
+mCs = Core.fireTransition(csAst, "FailActive", mCs).marking;
+const enCs1 = Core.getEnabledTransitions(csAst, mCs, true);
+const switchEnabled = enCs1.fireable.has("Switchover");
+mCs = Core.fireTransition(csAst, "Switchover", mCs).marking;
+mCs = Core.fireTransition(csAst, "RepairUnit", mCs).marking;
+const csBackToM0 = JSON.stringify(mCs) === JSON.stringify(m0Cs);
+const csOk = inhBlocked && switchEnabled && csBackToM0;
+report(csOk, "TOKEN_GAME_COLD_STANDBY_CYCLE", `inh=${inhBlocked} switch=${switchEnabled} returnedToM0=${csBackToM0}`);
 
 // 6. Shadow/Mirror Places projection (exact arc count + zero overlap)
-const layTo = Core.computeAutoLayout(spnTimeoutAst);
-const gMir = Core.computeSpnArcGraph(spnTimeoutAst, layTo, {
+const layCs = Core.computeAutoLayout(csAst);
+const gMir = Core.computeSpnArcGraph(csAst, layCs, {
   useGravity: true,
   useMirrors: true,
-  mirrorDistThreshold: 300
+  mirrorDistThreshold: 120
 });
 let mirOverlap = false;
 for (const mir of gMir.mirrors) {
-  for (const [, pt] of Object.entries(layTo)) {
+  for (const [, pt] of Object.entries(layCs)) {
     if (Math.hypot((mir.x - pt.x) / 70, (mir.y - pt.y) / 55) < 1.0) mirOverlap = true;
   }
 }
@@ -175,29 +160,29 @@ for (let i = 0; i < gMir.mirrors.length; i++) {
     if (Math.hypot((a.x - b.x) / 72, (a.y - b.y) / 42) < 1.0) mirOverlap = true;
   }
 }
-const expectedArcs = Core.auditModel(spnTimeoutAst).stats.totalArcs;
+const expectedArcs = Core.auditModel(csAst).stats.totalArcs;
 const mirOk = gMir.arcs.length === expectedArcs && gMir.mirrors.length > 0 && !mirOverlap;
 report(mirOk, "SHADOW_MIRROR_PROJECTION", `arcs=${gMir.arcs.length}/${expectedArcs} mirrors=${gMir.mirrors.length} overlap=${mirOverlap}`);
 
 // 7. Formal transition table export (Markdown + LaTeX)
-const fTab = Core.generateTransitionTable(spnTimeoutAst);
-const tabOk = fTab.rows.length === spnTimeoutAst.transitions.length && fTab.markdown.includes("RecycleTimeout") && fTab.latex.includes("\\begin{tabular}");
+const fTab = Core.generateTransitionTable(csAst);
+const tabOk = fTab.rows.length === csAst.transitions.length && fTab.markdown.includes("Switchover") && fTab.latex.includes("\\begin{tabular}");
 report(tabOk, "FORMAL_TRANSITION_TABLE", `rows=${fTab.rows.length} md=${fTab.markdown.length}ch tex=${fTab.latex.length}ch`);
 
-// 8. CLI SVG exporter smoke test (SPN + --mirrors --ieee + RBD)
+// 8. CLI SVG exporter smoke test (SPN + --mirrors --ieee + RBD TMR 2-of-3)
 const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "mry-studio-test-"));
 try {
   const spnIn = path.join(tmpDir, "spn.mry");
   const spnOut = path.join(tmpDir, "spn.svg");
   const rbdIn = path.join(tmpDir, "rbd.mry");
   const rbdOut = path.join(tmpDir, "rbd.svg");
-  fs.writeFileSync(spnIn, PRESETS[0].code, "utf-8");
+  fs.writeFileSync(spnIn, PRESETS[1].code, "utf-8");
   fs.writeFileSync(rbdIn, PRESETS[3].code, "utf-8");
   execFileSync(process.execPath, [path.join(__dirname, "export_svg.js"), spnIn, spnOut, "--ieee", "--mirrors"], { stdio: "pipe" });
   execFileSync(process.execPath, [path.join(__dirname, "export_svg.js"), rbdIn, rbdOut], { stdio: "pipe" });
   const spnSvg = fs.readFileSync(spnOut, "utf-8");
   const rbdSvg = fs.readFileSync(rbdOut, "utf-8");
-  const cliOk = spnSvg.includes("<svg") && spnSvg.includes("RecycleTimeout") && rbdSvg.includes("<svg") && rbdSvg.includes("Compute2of3");
+  const cliOk = spnSvg.includes("<svg") && spnSvg.includes("Switchover") && rbdSvg.includes("<svg") && rbdSvg.includes("Channels_2of3");
   report(cliOk, "CLI_SVG_EXPORTER_SMOKE", `spn=${spnSvg.length}B rbd=${rbdSvg.length}B`);
 } finally {
   fs.rmSync(tmpDir, { recursive: true, force: true });
