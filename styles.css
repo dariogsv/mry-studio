@@ -25,6 +25,9 @@
   --canvas-bg: #f8fafc;
   --canvas-grid: #e2e8f0;
   --topbar-h: 52px;
+  --code-w: 370px;
+  --inspector-w: 340px;
+  --split-ratio: 50%;
   --radius-sm: 6px;
   --radius-md: 10px;
   --radius-lg: 14px;
@@ -229,11 +232,85 @@ select:focus, input:focus, textarea:focus {
 .menu-sep { height: 1px; background: var(--border); margin: 4px 0; }
 
 /* ==========================================================================
+   APP SHELL (SINGLE OR DUAL-MODEL SPLIT WORKSPACE)
+   ========================================================================== */
+.app-shell {
+  flex: 1 1 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  position: relative;
+  overflow: hidden;
+}
+.split-divider,
+.split-secondary {
+  display: none;
+}
+.app-shell.split-active .workspace {
+  flex: 0 0 var(--split-ratio);
+  min-width: 0;
+  min-height: 0;
+}
+.app-shell.split-active .split-divider {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 8px;
+  background: var(--surface-0);
+  border-top: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
+  cursor: row-resize;
+  z-index: 35;
+  position: relative;
+  transition: background 0.14s;
+}
+.app-shell.split-active .split-divider::after {
+  content: "";
+  width: 36px;
+  height: 3px;
+  border-radius: 999px;
+  background: #475569;
+}
+.app-shell.split-active .split-divider:hover,
+.app-shell.split-active .split-divider.dragging {
+  background: rgba(56, 189, 248, 0.25);
+}
+.app-shell.split-active .split-divider:hover::after,
+.app-shell.split-active .split-divider.dragging::after {
+  background: var(--accent);
+}
+.app-shell.split-active .split-secondary {
+  display: flex;
+  flex: 1 1 0;
+  min-width: 0;
+  min-height: 0;
+  background: var(--surface-1);
+}
+#splitFrame {
+  width: 100%;
+  height: 100%;
+  border: none;
+  display: block;
+}
+body.is-resizing #splitFrame {
+  pointer-events: none;
+}
+body.is-resizing {
+  user-select: none;
+}
+
+/* Draggable vertical pane splitters (Desktop >= 1100px) */
+.pane-splitter {
+  display: none;
+}
+
+/* ==========================================================================
    WORKSPACE LAYOUT (MOBILE-FIRST: FULL CANVAS + OVERLAY DRAWERS/BOTTOM SHEET)
    ========================================================================== */
 .workspace {
   flex: 1 1 0;
   min-height: 0;
+  min-width: 0;
   position: relative;
   overflow: hidden;
   display: flex;
@@ -938,6 +1015,23 @@ select:focus, input:focus, textarea:focus {
   .sheet-handle-bar { justify-content: flex-end; border-radius: 0; padding: 6px 10px 4px; }
   .sheet-pill { display: none; }
   .sheet-close { position: static; }
+
+  /* On tablet & desktop, 2-model split runs cleanly side-by-side! */
+  .app-shell.split-active {
+    flex-direction: row;
+  }
+  .app-shell.split-active .split-divider {
+    flex: 0 0 8px;
+    border-top: none;
+    border-bottom: none;
+    border-left: 1px solid var(--border);
+    border-right: 1px solid var(--border);
+    cursor: col-resize;
+  }
+  .app-shell.split-active .split-divider::after {
+    width: 3px;
+    height: 36px;
+  }
 }
 
 /* ==========================================================================
@@ -950,29 +1044,81 @@ select:focus, input:focus, textarea:focus {
   .drawer-backdrop { display: none !important; }
 
   .workspace {
-    display: grid;
-    grid-template-columns: 370px 1fr 340px;
-    transition: grid-template-columns 0.18s var(--ease-out);
+    display: flex;
+    flex-direction: row;
+    align-items: stretch;
   }
-  .workspace.wide-code { grid-template-columns: 540px 1fr 340px; }
-  .workspace.hide-code { grid-template-columns: 0px 1fr 340px; }
-  .workspace.hide-code .pane-code { display: none; }
-  .workspace.hide-inspector { grid-template-columns: 370px 1fr 0px; }
-  .workspace.hide-inspector .pane-inspector { display: none; }
-  .workspace.hide-code.hide-inspector { grid-template-columns: 0px 1fr 0px; }
-  .workspace.wide-code.hide-inspector { grid-template-columns: 540px 1fr 0px; }
-
-  .pane-code,
-  .pane-inspector {
+  .pane-code {
     position: static;
-    width: auto;
+    flex: 0 0 var(--code-w);
+    width: var(--code-w);
+    max-width: 70vw;
     height: auto;
     transform: none !important;
     box-shadow: none;
     z-index: 1;
+    border-right: none;
   }
-  .pane-code { border-right: 1px solid var(--border); }
-  .pane-inspector { border-left: 1px solid var(--border); }
+  .pane-inspector {
+    position: static;
+    flex: 0 0 var(--inspector-w);
+    width: var(--inspector-w);
+    max-width: 50vw;
+    height: auto;
+    transform: none !important;
+    box-shadow: none;
+    z-index: 1;
+    border-left: none;
+  }
+  .pane-canvas {
+    flex: 1 1 0;
+    min-width: 240px;
+  }
+
+  /* Draggable vertical dividers between Code <-> Canvas <-> Inspector */
+  .pane-splitter {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex: 0 0 6px;
+    background: var(--surface-0);
+    border-left: 1px solid var(--border);
+    border-right: 1px solid var(--border);
+    cursor: col-resize;
+    position: relative;
+    z-index: 10;
+    transition: background 0.14s, border-color 0.14s;
+  }
+  .pane-splitter::after {
+    content: "";
+    width: 2px;
+    height: 32px;
+    border-radius: 999px;
+    background: #475569;
+    transition: background 0.14s, height 0.14s;
+  }
+  .pane-splitter:hover,
+  .pane-splitter.dragging {
+    background: rgba(56, 189, 248, 0.22);
+    border-color: var(--accent);
+  }
+  .pane-splitter:hover::after,
+  .pane-splitter.dragging::after {
+    background: var(--accent);
+    height: 52px;
+  }
+
+  .workspace.hide-code .pane-code,
+  .workspace.hide-code .splitter-code {
+    display: none;
+  }
+  .workspace.hide-inspector .pane-inspector,
+  .workspace.hide-inspector .splitter-inspector {
+    display: none;
+  }
+  .workspace.wide-code {
+    --code-w: 540px;
+  }
 
   .filter-bar { flex-wrap: wrap; overflow-x: visible; }
   .chip-strip { flex-wrap: wrap; }

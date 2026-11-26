@@ -82,8 +82,17 @@
     btnExportSvg: document.getElementById("btnExportSvg"),
     btnExportPng: document.getElementById("btnExportPng"),
     btnToggleCode: document.getElementById("btnToggleCode"),
+    btnFocusCanvas: document.getElementById("btnFocusCanvas"),
+    btnSplitModel: document.getElementById("btnSplitModel"),
     btnToggleInspector: document.getElementById("btnToggleInspector"),
+    btnCloseEmbeddedSplit: document.getElementById("btnCloseEmbeddedSplit"),
     btnCloseInspector: document.getElementById("btnCloseInspector"),
+    appShell: document.getElementById("appShell"),
+    splitterCode: document.getElementById("splitterCode"),
+    splitterInspector: document.getElementById("splitterInspector"),
+    splitterSplit: document.getElementById("splitterSplit"),
+    splitSecondary: document.getElementById("splitSecondary"),
+    splitFrame: document.getElementById("splitFrame"),
     drawerBackdrop: document.getElementById("drawerBackdrop"),
     toastHost: document.getElementById("toastHost"),
     btnWideCode: document.getElementById("btnWideCode"),
@@ -4831,7 +4840,9 @@
   }
 
   function isCompactViewport() {
-    return window.innerWidth < 1100;
+    // When 2-model split is active, treat the narrower left half as compact below 1450px
+    const splitOn = dom.appShell && dom.appShell.classList.contains("split-active");
+    return window.innerWidth < (splitOn ? 1450 : 1100);
   }
 
   function syncPanelButtons() {
@@ -4842,6 +4853,7 @@
     const inspOpen = compact
       ? dom.workspace.classList.contains("mobile-inspector-open")
       : !dom.workspace.classList.contains("hide-inspector");
+    const gridFocused = !codeOpen && !inspOpen;
 
     if (dom.btnToggleCode) {
       dom.btnToggleCode.classList.toggle("active", codeOpen);
@@ -4851,9 +4863,183 @@
       dom.btnToggleInspector.classList.toggle("active", inspOpen);
       dom.btnToggleInspector.setAttribute("aria-pressed", String(inspOpen));
     }
+    if (dom.btnFocusCanvas) {
+      dom.btnFocusCanvas.classList.toggle("active", gridFocused);
+      dom.btnFocusCanvas.setAttribute("aria-pressed", String(gridFocused));
+    }
     if (dom.drawerBackdrop) {
       dom.drawerBackdrop.classList.toggle("visible", compact && (codeOpen || inspOpen));
     }
+  }
+
+  let savedDesktopPanels = { hideCode: false, hideInspector: false };
+
+  function toggleFocusCanvas(forceFocus = null) {
+    const compact = isCompactViewport();
+    const currentlyFocused = compact
+      ? !dom.workspace.classList.contains("mobile-code-open") && !dom.workspace.classList.contains("mobile-inspector-open")
+      : dom.workspace.classList.contains("hide-code") && dom.workspace.classList.contains("hide-inspector");
+    const wantFocus = forceFocus !== null ? forceFocus : !currentlyFocused;
+
+    if (compact) {
+      if (wantFocus) closeAllMobileDrawers();
+      else toggleInspectorPane(false);
+      return;
+    }
+
+    if (wantFocus) {
+      if (!currentlyFocused) {
+        savedDesktopPanels = {
+          hideCode: dom.workspace.classList.contains("hide-code"),
+          hideInspector: dom.workspace.classList.contains("hide-inspector")
+        };
+      }
+      dom.workspace.classList.add("hide-code", "hide-inspector");
+      if (forceFocus === null) showToast("Modo Focar Grid ativo (F para restaurar)");
+    } else {
+      dom.workspace.classList.toggle("hide-code", savedDesktopPanels.hideCode);
+      dom.workspace.classList.toggle("hide-inspector", savedDesktopPanels.hideInspector);
+      if (dom.workspace.classList.contains("hide-code") && dom.workspace.classList.contains("hide-inspector")) {
+        dom.workspace.classList.remove("hide-code", "hide-inspector");
+      }
+    }
+    syncPanelButtons();
+    setTimeout(fitView, 160);
+  }
+
+  // Draggable Pane Splitters (Code <-> Canvas & Canvas <-> Inspector) with localStorage persistence
+  const STORAGE_CODE_W = "mry_studio_code_w_v1";
+  const STORAGE_INSP_W = "mry_studio_insp_w_v1";
+
+  function applySavedPaneWidths() {
+    try {
+      const cw = Number(localStorage.getItem(STORAGE_CODE_W));
+      if (Number.isFinite(cw) && cw >= 220 && cw <= 760) {
+        document.documentElement.style.setProperty("--code-w", `${cw}px`);
+      }
+      const iw = Number(localStorage.getItem(STORAGE_INSP_W));
+      if (Number.isFinite(iw) && iw >= 250 && iw <= 560) {
+        document.documentElement.style.setProperty("--inspector-w", `${iw}px`);
+      }
+    } catch (_) {}
+  }
+  applySavedPaneWidths();
+
+  function setupPaneSplitter(handleEl, cssVar, storageKey, defaultPx, minPx, maxPx, fromRight = false) {
+    if (!handleEl) return;
+    handleEl.addEventListener("mousedown", (e) => {
+      if (e.button !== 0 || isCompactViewport()) return;
+      e.preventDefault();
+      handleEl.classList.add("dragging");
+      document.body.classList.add("is-resizing");
+      const wsRect = dom.workspace.getBoundingClientRect();
+
+      const onMove = (ev) => {
+        const rawW = fromRight ? wsRect.right - ev.clientX : ev.clientX - wsRect.left;
+        const clamped = Math.round(Math.max(minPx, Math.min(maxPx, wsRect.width - 280, rawW)));
+        if (!fromRight) dom.workspace.classList.remove("wide-code");
+        if (dom.btnWideCode && !fromRight) dom.btnWideCode.classList.remove("active");
+        document.documentElement.style.setProperty(cssVar, `${clamped}px`);
+      };
+      const onUp = () => {
+        handleEl.classList.remove("dragging");
+        document.body.classList.remove("is-resizing");
+        window.removeEventListener("mousemove", onMove);
+        window.removeEventListener("mouseup", onUp);
+        const finalPx = parseInt(getComputedStyle(document.documentElement).getPropertyValue(cssVar), 10);
+        if (Number.isFinite(finalPx)) {
+          try { localStorage.setItem(storageKey, String(finalPx)); } catch (_) {}
+        }
+      };
+      window.addEventListener("mousemove", onMove);
+      window.addEventListener("mouseup", onUp);
+    });
+
+    handleEl.addEventListener("dblclick", () => {
+      if (!fromRight) dom.workspace.classList.remove("wide-code");
+      if (dom.btnWideCode && !fromRight) dom.btnWideCode.classList.remove("active");
+      document.documentElement.style.setProperty(cssVar, `${defaultPx}px`);
+      try { localStorage.removeItem(storageKey); } catch (_) {}
+      showToast("Largura do painel restaurada");
+    });
+  }
+
+  setupPaneSplitter(dom.splitterCode, "--code-w", STORAGE_CODE_W, 370, 220, 760, false);
+  setupPaneSplitter(dom.splitterInspector, "--inspector-w", STORAGE_INSP_W, 340, 250, 560, true);
+
+  // Dual-Model Simultaneous Split Workspace (Model A | Model B)
+  function toggleSplitModel(forceActive = null) {
+    if (!dom.appShell || !dom.splitFrame) return;
+    const active = forceActive !== null ? forceActive : !dom.appShell.classList.contains("split-active");
+    dom.appShell.classList.toggle("split-active", active);
+    if (dom.btnSplitModel) {
+      dom.btnSplitModel.classList.toggle("active", active);
+      dom.btnSplitModel.setAttribute("aria-pressed", String(active));
+    }
+
+    if (active) {
+      // Load a complementary preset in Model B if iframe is empty
+      if (!dom.splitFrame.src || dom.splitFrame.src === "about:blank") {
+        const curPid = state.fileKey && state.fileKey.startsWith("preset:") ? state.fileKey.slice(7) : "";
+        const alt = PRESETS.find((p) => p.id !== curPid) || PRESETS[0];
+        const presetParam = alt ? `&preset=${encodeURIComponent(alt.id)}` : "";
+        dom.splitFrame.src = `index.html?embedded=1&focus=1${presetParam}`;
+      }
+      // Give Model A clean canvas breathing room too!
+      if (!dom.workspace.classList.contains("hide-code") || !dom.workspace.classList.contains("hide-inspector")) {
+        toggleFocusCanvas(true);
+      }
+      showToast("Modo 2 Modelos simultâneos ativado");
+    } else {
+      syncPanelButtons();
+      setTimeout(fitView, 180);
+    }
+  }
+
+  if (dom.btnFocusCanvas) dom.btnFocusCanvas.addEventListener("click", () => toggleFocusCanvas());
+  if (dom.btnSplitModel) dom.btnSplitModel.addEventListener("click", () => toggleSplitModel());
+  if (dom.btnCloseEmbeddedSplit) {
+    dom.btnCloseEmbeddedSplit.addEventListener("click", () => {
+      if (window.parent && window.parent !== window) {
+        window.parent.postMessage({ type: "mry-close-split" }, "*");
+      }
+    });
+  }
+  window.addEventListener("message", (ev) => {
+    if (ev.data && ev.data.type === "mry-close-split") {
+      toggleSplitModel(false);
+    }
+  });
+
+  if (dom.splitterSplit && dom.appShell) {
+    dom.splitterSplit.addEventListener("mousedown", (e) => {
+      if (e.button !== 0) return;
+      e.preventDefault();
+      dom.splitterSplit.classList.add("dragging");
+      document.body.classList.add("is-resizing");
+      const rect = dom.appShell.getBoundingClientRect();
+      const horizontal = window.innerWidth >= 768;
+
+      const onMove = (ev) => {
+        const ratio = horizontal
+          ? ((ev.clientX - rect.left) / rect.width) * 100
+          : ((ev.clientY - rect.top) / rect.height) * 100;
+        const clamped = Math.max(24, Math.min(76, ratio));
+        document.documentElement.style.setProperty("--split-ratio", `${clamped.toFixed(1)}%`);
+      };
+      const onUp = () => {
+        dom.splitterSplit.classList.remove("dragging");
+        document.body.classList.remove("is-resizing");
+        window.removeEventListener("mousemove", onMove);
+        window.removeEventListener("mouseup", onUp);
+      };
+      window.addEventListener("mousemove", onMove);
+      window.addEventListener("mouseup", onUp);
+    });
+    dom.splitterSplit.addEventListener("dblclick", () => {
+      document.documentElement.style.setProperty("--split-ratio", "50%");
+      showToast("Divisão restaurada para 50 / 50");
+    });
   }
 
   function closeAllMobileDrawers() {
@@ -5127,6 +5313,7 @@
     } else if (!e.shiftKey && !e.altKey && state.ast && state.ast.modelType === "SPN") {
       const k = e.key.toLowerCase();
       if (k === "s") toggleSimMode();
+      else if (k === "f") toggleFocusCanvas();
       else if (!state.simMode) {
         if (k === "v") setTool("select");
         else if (k === "p") setTool("addPlace");
@@ -5134,6 +5321,8 @@
         else if (k === "d") setTool("addDet");
         else if (k === "i") setTool("addImm");
       }
+    } else if (!e.shiftKey && !e.altKey && e.key.toLowerCase() === "f") {
+      toggleFocusCanvas();
     }
   });
 
@@ -5357,9 +5546,13 @@
     openWorkspaceEntry("preset:" + PRESETS[0].id, PRESETS[0].name, PRESETS[0].code, true);
   }
 
-  // Optional URL parameters for deep-linking / reproducible views (?preset=paulo_2t&mirrors=1&sim=1&tab=audit)
+  // Optional URL parameters for deep-linking / embedded dual-model split (?preset=...&mirrors=1&sim=1&focus=1&split=1&embedded=1)
   try {
     const qp = new URLSearchParams(window.location.search);
+    if (qp.get("embedded") === "1") {
+      if (dom.btnSplitModel) dom.btnSplitModel.style.display = "none";
+      if (dom.btnCloseEmbeddedSplit) dom.btnCloseEmbeddedSplit.style.display = "inline-flex";
+    }
     const qPreset = qp.get("preset");
     if (qPreset) {
       const pr = PRESETS.find((x) => x.id === qPreset);
@@ -5369,6 +5562,12 @@
       state.useMirrors = true;
       if (dom.chkMirrors) dom.chkMirrors.checked = true;
       renderCanvas();
+    }
+    if (qp.get("focus") === "1") {
+      toggleFocusCanvas(true);
+    }
+    if (qp.get("split") === "1" && qp.get("embedded") !== "1") {
+      toggleSplitModel(true);
     }
     if (qp.get("sim") === "1" && state.ast && state.ast.modelType === "SPN") {
       enterSimMode();

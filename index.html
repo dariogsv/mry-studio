@@ -66,13 +66,26 @@
         <span class="lbl-md">Código</span>
       </button>
 
+      <button class="btn" id="btnFocusCanvas" aria-pressed="false" title="Focar 100% no grid/diagrama (esconde Código e Inspetor) [F]">
+        <svg viewBox="0 0 20 20" fill="none" class="btn-ico"><path d="M3.5 7.5V4.5C3.5 3.9 3.9 3.5 4.5 3.5H7.5M12.5 3.5H15.5C16.1 3.5 16.5 3.9 16.5 4.5V7.5M16.5 12.5V15.5C16.5 16.1 16.1 16.5 15.5 16.5H12.5M7.5 16.5H4.5C3.9 16.5 3.5 16.1 3.5 15.5V12.5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
+        <span class="lbl-md">Focar Grid</span>
+      </button>
+
+      <button class="btn" id="btnSplitModel" aria-pressed="false" title="Trabalhar em 2 modelos simultaneamente lado a lado">
+        <svg viewBox="0 0 20 20" fill="none" class="btn-ico"><rect x="2.8" y="4" width="14.4" height="12" rx="2" stroke="currentColor" stroke-width="1.6"/><path d="M10 4V16" stroke="currentColor" stroke-width="1.6"/></svg>
+        <span class="lbl-md">2 Modelos</span>
+      </button>
+
       <button class="btn" id="btnToggleInspector" aria-pressed="true" title="Mostrar ou esconder painel Inspetor / Auditoria">
         <svg viewBox="0 0 20 20" fill="none" class="btn-ico"><rect x="3" y="4" width="14" height="12" rx="2" stroke="currentColor" stroke-width="1.6"/><path d="M12 4V16" stroke="currentColor" stroke-width="1.6"/></svg>
         <span class="lbl-md">Inspetor</span>
       </button>
+
+      <button class="btn danger" id="btnCloseEmbeddedSplit" style="display:none;" title="Fechar segundo modelo">✕</button>
     </div>
   </header>
 
+  <div class="app-shell" id="appShell">
   <main class="workspace" id="workspace">
     <!-- MOBILE/TABLET DRAWER BACKDROP -->
     <div class="drawer-backdrop" id="drawerBackdrop" aria-hidden="true"></div>
@@ -102,6 +115,9 @@
         </div>
       </div>
     </aside>
+
+    <!-- DRAGGABLE SPLITTER: CODE <-> CANVAS -->
+    <div class="pane-splitter splitter-code" id="splitterCode" role="separator" aria-orientation="vertical" aria-label="Redimensionar painel de código" title="Arraste para redimensionar • Duplo-clique para restaurar padrão"></div>
 
     <!-- CENTER (ALWAYS FULL CANVAS ON MOBILE): INTERACTIVE SPN/RBD STAGE -->
     <section class="pane pane-canvas" aria-label="Canvas visual do modelo">
@@ -247,6 +263,9 @@
       </div>
     </section>
 
+    <!-- DRAGGABLE SPLITTER: CANVAS <-> INSPECTOR -->
+    <div class="pane-splitter splitter-inspector" id="splitterInspector" role="separator" aria-orientation="vertical" aria-label="Redimensionar painel inspetor" title="Arraste para redimensionar • Duplo-clique para restaurar padrão"></div>
+
     <!-- RIGHT (BOTTOM SHEET ON MOBILE, DRAWER ON TABLET): INSPECTOR, MANIFEST, PARAMS & AUDIT -->
     <aside class="pane pane-inspector" id="paneInspector" aria-label="Inspetor e auditoria">
       <div class="sheet-handle-bar">
@@ -262,6 +281,13 @@
       <div class="tab-body" id="tabBody"></div>
     </aside>
   </main>
+
+  <!-- DRAGGABLE SPLITTER & SECONDARY INDEPENDENT WORKSPACE (2 MODELS SIMULTANEOUSLY) -->
+  <div class="split-divider" id="splitterSplit" role="separator" aria-orientation="vertical" aria-label="Redimensionar divisão entre os 2 modelos" title="Arraste para ajustar proporção entre os 2 modelos • Duplo-clique para 50/50"></div>
+  <section class="split-secondary" id="splitSecondary" aria-label="Segundo modelo simultâneo">
+    <iframe id="splitFrame" title="MRY Visual Studio — Modelo 2"></iframe>
+  </section>
+  </div>
 
   <div id="svgTooltip" role="tooltip"></div>
   <div id="toastHost" class="toast-host" aria-live="polite"></div>
