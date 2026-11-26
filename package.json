@@ -1,0 +1,20 @@
+{
+  "name": "mry-studio",
+  "version": "1.0.0",
+  "description": "Deterministic bidirectional MRY <-> Visual Studio for Mercury SPN & RBD models",
+  "private": false,
+  "scripts": {
+    "test": "node test_roundtrip.js",
+    "check": "node --check mry-core.js && node --check presets.js && node --check app.js && node --check export_svg.js && node --check test_roundtrip.js"
+  },
+  "keywords": [
+    "mercury",
+    "spn",
+    "rbd",
+    "petri-net",
+    "dependability",
+    "performability",
+    "svg"
+  ],
+  "license": "MIT"
+}
