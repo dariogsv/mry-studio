@@ -1163,14 +1163,39 @@
   }
 
   // =========================================================================
-  // 5. DETERMINISTIC AUTO-LAYOUT ENGINE (SYMMETRIC MULTI-BRANCH + LAYERED)
+  // 5. DETERMINISTIC AUTO-LAYOUT ENGINE (TOPOLOGICAL SUGIYAMA + SYMMETRIC)
   // =========================================================================
   function getNodeBranch(name) {
     const m = name.match(/_(T\d+)$/);
     if (m) return m[1];
+    if (/Fail|Repair|^UpServer|^DownServer|^DownTurnstile|^UpTurnstile|_Up$|_Down$/i.test(name)) return "INFRA";
     if (/^Server|ProcessRequest/i.test(name)) return "SHARED";
-    if (/Fail|Repair|UpServer|DownServer|DownTurnstile|UpTurnstile/i.test(name)) return "INFRA";
     return "MAIN";
+  }
+
+  /**
+   * Context-aware branch classifier:
+   * Only separates "INFRA" from "MAIN" if the model actually has an operational
+   * request/service pipeline AND a separate failure/repair subsystem (like Silo/Hibrido).
+   * Pure dependability models (like ColdStandby or HighAvailabilityPair) stay unified!
+   */
+  function hasSeparateOperationalFlow(ast) {
+    const trs = ast.transitions || [];
+    const hasOp = trs.some((t) =>
+      /Arriv|Register|Spread|Upload|Download|Sync|Generate|Prepare|Transmit|Send|Process|Validate|Acquire|StartService|FinishService/i.test(t.name)
+    );
+    const hasUpDown = (ast.places || []).some((p) => /^Up|^Down|_Up$|_Down$/i.test(p.name));
+    const hasStandby = (ast.places || []).some((p) => /Standby|Backup|Repairman/i.test(p.name));
+    if (hasStandby) return false;
+    return hasOp && hasUpDown;
+  }
+
+  function getContextualBranch(ast, name) {
+    const raw = getNodeBranch(name);
+    if (raw === "INFRA" && !hasSeparateOperationalFlow(ast)) {
+      return "MAIN";
+    }
+    return raw;
   }
 
   function computeDefaultZones(ast) {
@@ -1179,15 +1204,14 @@
       if (!byKey[key]) byKey[key] = [];
       byKey[key].push(id);
     };
-    for (const p of ast.places || []) add(getNodeBranch(p.name), `P:${p.name}`);
-    for (const t of ast.transitions || []) add(getNodeBranch(t.name), `T:${t.name}`);
+    for (const p of ast.places || []) add(getContextualBranch(ast, p.name), `P:${p.name}`);
+    for (const t of ast.transitions || []) add(getContextualBranch(ast, t.name), `T:${t.name}`);
 
     const keys = Object.keys(byKey).filter((k) => /^T\d+$/.test(k) || k === "SHARED" || k === "INFRA");
     if (keys.length < 2) {
-      // Single-group models (e.g., Silo/Hibrido with INFRA): still group MAIN + INFRA if INFRA exists
       if (byKey["INFRA"] && byKey["MAIN"]) {
         return [
-          { id: "zone_MAIN", label: "FLUXO PRINCIPAL", color: "#0284c7", members: byKey["MAIN"] },
+          { id: "zone_MAIN", label: "FLUXO OPERACIONAL", color: "#0284c7", members: byKey["MAIN"] },
           { id: "zone_INFRA", label: "DEPENDABILIDADE (FALHA / REPARO)", color: "#ef4444", members: byKey["INFRA"] }
         ];
       }
@@ -1248,8 +1272,6 @@
       const sharedBandHeight = 200;
       const topPad = 100;
       const midSplit = Math.ceil(sortedBranches.length / 2);
-
-      // Compute vertical Y baseline for each branch (mirroring bottom branches around shared server band!)
       const sharedCenterY = topPad + midSplit * branchHeight + sharedBandHeight / 2;
 
       sortedBranches.forEach((br, idx) => {
@@ -1258,18 +1280,11 @@
           ? topPad + midSplit * branchHeight + sharedBandHeight + (idx - midSplit) * branchHeight
           : topPad + idx * branchHeight;
 
-        // If lower half, mirror rows so Queued/AcquireServer/InService sit CLOSEST to the shared server band!
         const rowY = (r) => {
-          // r in [0..3]: 0 = outer edge (Sync/Timeout), 3 = inner edge closest to shared server (Queued/Acquire/InService)
           const rowStep = 105;
-          if (!isLower) {
-            return baseY + r * rowStep;
-          } else {
-            return baseY + (3 - r) * rowStep;
-          }
+          return !isLower ? baseY + r * rowStep : baseY + (3 - r) * rowStep;
         };
 
-        // Place & Transition deterministic slot mapping by base name
         const slots = {
           [`Synchronize_${br}`]:      [colX[0], rowY(0)],
           [`Synchronization_${br}`]:  [colX[2], rowY(0)],
@@ -1308,7 +1323,6 @@
         }
       });
 
-      // Shared central server nodes
       const sharedSlots = {
         ServerQueue: [colX[6], sharedCenterY],
         ServerFree: [colX[7], sharedCenterY],
@@ -1332,106 +1346,248 @@
       return pos;
     }
 
-    // --- STRATEGY B: Deterministic Layered Flow Layout (Generic SPNs: Silo, P2P, Hibrido, custom) ---
+    // --- STRATEGY B: Topological Sugiyama Bipartite Flow + Docked Resources + 2D Dependability Cycles ---
     const mainNodes = [];
     const infraNodes = [];
 
     for (const p of ast.places || []) {
       const id = `P:${p.name}`;
-      if (getNodeBranch(p.name) === "INFRA") infraNodes.push({ id, kind: "P", name: p.name, tokens: p.tokens });
+      if (getContextualBranch(ast, p.name) === "INFRA") infraNodes.push({ id, kind: "P", name: p.name, tokens: p.tokens });
       else mainNodes.push({ id, kind: "P", name: p.name, tokens: p.tokens });
     }
     for (const t of ast.transitions || []) {
       const id = `T:${t.name}`;
-      if (getNodeBranch(t.name) === "INFRA") infraNodes.push({ id, kind: "T", name: t.name });
+      if (getContextualBranch(ast, t.name) === "INFRA") infraNodes.push({ id, kind: "T", name: t.name });
       else mainNodes.push({ id, kind: "T", name: t.name });
     }
 
-    // Build directed adjacency for main nodes
+    // 1. Detect pure 1-Transition Mutex / Resource Places (e.g. Repairman_Free <-> RepairUnit, ESC_Local <-> Validate)
+    // These places only connect to a single transition in mainNodes and should dock vertically below/above it!
+    const mainSet = new Set(mainNodes.map((n) => n.id));
+    const dockedResourceOf = {}; // placeId -> transitionId
+    const dockedByTrans = {};    // transitionId -> [placeId]
+
+    for (const p of mainNodes.filter((n) => n.kind === "P")) {
+      const incidentTrans = new Set();
+      let isIn = false, isOut = false;
+      for (const tr of ast.transitions || []) {
+        const tid = `T:${tr.name}`;
+        if (!mainSet.has(tid)) continue;
+        if ((tr.inputs || []).some((a) => a.place === p.name)) { incidentTrans.add(tid); isIn = true; }
+        if ((tr.outputs || []).some((a) => a.place === p.name)) { incidentTrans.add(tid); isOut = true; }
+      }
+      if (incidentTrans.size === 1 && isIn && isOut && mainNodes.length > 3) {
+        const hostTid = Array.from(incidentTrans)[0];
+        dockedResourceOf[p.id] = hostTid;
+        if (!dockedByTrans[hostTid]) dockedByTrans[hostTid] = [];
+        dockedByTrans[hostTid].push(p.id);
+      }
+    }
+
+    const coreNodes = mainNodes.filter((n) => !dockedResourceOf[n.id]);
     const adj = {};
-    const inDeg = {};
-    for (const n of mainNodes) { adj[n.id] = []; inDeg[n.id] = 0; }
+    const revAdj = {};
+    for (const n of coreNodes) { adj[n.id] = []; revAdj[n.id] = []; }
 
     for (const tr of ast.transitions || []) {
       const tid = `T:${tr.name}`;
       if (!adj[tid]) continue;
       for (const a of tr.inputs || []) {
         const pid = `P:${a.place}`;
-        if (adj[pid]) { adj[pid].push(tid); inDeg[tid]++; }
+        if (adj[pid]) {
+          adj[pid].push(tid);
+          revAdj[tid].push(pid);
+        }
       }
       for (const a of tr.outputs || []) {
         const pid = `P:${a.place}`;
-        if (adj[pid]) { adj[tid].push(pid); inDeg[pid]++; }
-      }
-    }
-
-    // BFS layer assignment starting from Idle/initial-token places or zero-indegree nodes
-    const layer = {};
-    const queue = [];
-    const roots = mainNodes.filter(
-      (n) => n.kind === "P" && (/Idle|Arriving/i.test(n.name) || (n.tokens && n.tokens !== "0" && !/ESC|MeshCapacity/i.test(n.name)))
-    );
-    const startNodes = roots.length > 0 ? roots : mainNodes.slice(0, 1);
-    for (const r of startNodes) {
-      layer[r.id] = 0;
-      queue.push(r.id);
-    }
-
-    while (queue.length > 0) {
-      const cur = queue.shift();
-      const l = layer[cur];
-      for (const nxt of adj[cur] || []) {
-        if (layer[nxt] === undefined) {
-          layer[nxt] = l + 1;
-          queue.push(nxt);
+        if (adj[pid]) {
+          adj[tid].push(pid);
+          revAdj[pid].push(tid);
         }
       }
     }
 
-    // Place remaining unvisited main nodes (e.g., ESC / MeshCapacity) near their connected transitions
-    for (const n of mainNodes) {
+    // 2. Choose primary root places (Active_Up, FreeSlots, Idle, Arriving) to anchor Column 0
+    // Note: use ^Idle so "ServerIdle" is NOT mistaken for an arrival root!
+    const layer = {};
+    const queue = [];
+    const primaryRoots = coreNodes.filter(
+      (n) =>
+        n.kind === "P" &&
+        (/^Idle|^FreeSlots|^Active_Up|^Primary_Up|^Arriving/i.test(n.name) ||
+          (n.tokens && n.tokens !== "0" && !/Standby|Backup|ServerIdle|ServerFree|ESC|MeshCapacity/i.test(n.name)))
+    );
+    const standbyRoots = coreNodes.filter(
+      (n) => n.kind === "P" && !primaryRoots.includes(n) && /Standby|Backup/i.test(n.name)
+    );
+    const secondaryRoots = coreNodes.filter(
+      (n) =>
+        n.kind === "P" &&
+        !primaryRoots.includes(n) &&
+        !standbyRoots.includes(n) &&
+        (n.tokens && n.tokens !== "0")
+    );
+
+    const seedRoots = primaryRoots.length > 0 ? primaryRoots : secondaryRoots.length > 0 ? secondaryRoots : coreNodes.slice(0, 1);
+    const secondarySet = new Set(secondaryRoots.map((n) => n.id));
+    for (const r of [...seedRoots, ...standbyRoots]) {
+      layer[r.id] = 0;
+      queue.push(r.id);
+    }
+
+    const runForwardBfs = (holdSecondary = false) => {
+      while (queue.length > 0) {
+        const cur = queue.shift();
+        const l = layer[cur];
+        for (const nxt of adj[cur] || []) {
+          if (holdSecondary && secondarySet.has(nxt)) continue;
+          if (layer[nxt] === undefined) {
+            layer[nxt] = l + 1;
+            queue.push(nxt);
+          }
+        }
+      }
+    };
+
+    // Pass 1: unroll the primary forward pipeline (holding back secondary loop places like ServerIdle!)
+    runForwardBfs(true);
+
+    // Pass 2: place server/resource loop states (like ServerIdle in M/M/1/K) right under their server loop!
+    for (const sr of secondaryRoots) {
+      if (layer[sr.id] !== undefined) continue;
+      const visitedOutCols = (adj[sr.id] || []).map((tid) => layer[tid]).filter((v) => v !== undefined);
+      const visitedInCols = (revAdj[sr.id] || []).map((tid) => layer[tid]).filter((v) => v !== undefined);
+      if (visitedOutCols.length > 0 && visitedInCols.length > 0) {
+        const minOut = Math.min(...visitedOutCols);
+        const maxIn = Math.max(...visitedInCols);
+        let midCol = Math.round((minOut + maxIn) / 2);
+        if (midCol % 2 !== 0) midCol = Math.max(0, minOut - 1);
+        layer[sr.id] = midCol;
+      } else if (visitedOutCols.length > 0) {
+        layer[sr.id] = Math.max(0, Math.min(...visitedOutCols) - 1);
+      } else {
+        layer[sr.id] = 0;
+      }
+      queue.push(sr.id);
+      runForwardBfs();
+    }
+
+    // Any remaining unvisited core nodes: place relative to neighbors preserving bipartite parity (Places even, Transitions odd)
+    for (const n of coreNodes) {
       if (layer[n.id] === undefined) {
-        const connected = (adj[n.id] || []).map((id) => layer[id]).filter((v) => v !== undefined);
-        layer[n.id] = connected.length > 0 ? Math.max(0, Math.min(...connected) - 1) : 0;
+        const neighLayers = [...(adj[n.id] || []), ...(revAdj[n.id] || [])]
+          .map((id) => layer[id])
+          .filter((v) => v !== undefined);
+        const rawL = neighLayers.length > 0 ? Math.max(0, Math.min(...neighLayers) - 1) : (n.kind === "P" ? 0 : 1);
+        const wantParity = n.kind === "P" ? 0 : 1;
+        layer[n.id] = rawL % 2 === wantParity ? rawL : rawL + 1;
       }
     }
 
-    // Group by layer
+    // 3. Group by column & run Barycentric Row Ordering (Sugiyama crossing reduction!)
     const byLayer = {};
-    for (const n of mainNodes) {
+    for (const n of coreNodes) {
       const l = layer[n.id] || 0;
       if (!byLayer[l]) byLayer[l] = [];
       byLayer[l].push(n);
     }
 
-    const colStep = 175;
-    const rowStep = 145;
+    const sortedLayers = Object.keys(byLayer).map(Number).sort((a, b) => a - b);
+    const rowOrder = {}; // nodeId -> row index within its layer
+
+    // Initial order in first column: primary roots on top, secondary roots below
+    sortedLayers.forEach((l) => {
+      const list = byLayer[l];
+      list.sort((a, b) => {
+        const aPri = primaryRoots.includes(a) ? 0 : secondaryRoots.includes(a) ? 1 : 2;
+        const bPri = primaryRoots.includes(b) ? 0 : secondaryRoots.includes(b) ? 1 : 2;
+        return aPri - bPri || a.name.localeCompare(b.name);
+      });
+      list.forEach((n, idx) => { rowOrder[n.id] = idx; });
+    });
+
+    // Forward & backward barycenter sweeps
+    for (let sweep = 0; sweep < 4; sweep++) {
+      for (const l of sortedLayers) {
+        const list = byLayer[l];
+        if (list.length <= 1) continue;
+        list.sort((a, b) => {
+          const getBary = (node) => {
+            const preds = (revAdj[node.id] || []).filter((id) => layer[id] < l);
+            const succs = (adj[node.id] || []).filter((id) => layer[id] > l);
+            const refs = preds.length > 0 ? preds : succs;
+            if (refs.length === 0) return rowOrder[node.id];
+            return refs.reduce((acc, id) => acc + (rowOrder[id] ?? 0), 0) / refs.length;
+          };
+          return getBary(a) - getBary(b) || a.name.localeCompare(b.name);
+        });
+        list.forEach((n, idx) => { rowOrder[n.id] = idx; });
+      }
+    }
+
+    // 4. Assign crisp grid coordinates (snapping single-child horizontal chains to exact same Y!)
+    const colStep = 185;
+    const rowStep = 150;
+    const baseTopY = 160;
     let maxMainY = 260;
 
-    for (const lKey of Object.keys(byLayer).sort((a, b) => Number(a) - Number(b))) {
-      const l = Number(lKey);
+    sortedLayers.forEach((l, colIdx) => {
       const list = byLayer[l];
-      const startY = Math.max(100, 240 - ((list.length - 1) * rowStep) / 2);
-      list.forEach((n, idx) => {
-        const y = startY + idx * rowStep;
-        pos[n.id] = { x: 120 + l * colStep, y };
+      const x = 140 + colIdx * colStep;
+      list.forEach((n, rIdx) => {
+        let y = baseTopY + rIdx * rowStep;
+        // If single node in this column or direct 1-to-1 continuation from previous column, align horizontally!
+        const predsInPrev = (revAdj[n.id] || []).filter((pid) => layer[pid] === l - 1 && pos[pid]);
+        if (list.length === 1 && predsInPrev.length === 1) {
+          y = pos[predsInPrev[0]].y;
+        }
+        pos[n.id] = { x, y };
         if (y > maxMainY) maxMainY = y;
+      });
+    });
+
+    // Position vertically docked 1-Transition Mutex/Resource Places directly below (or above) their host transition!
+    for (const [tid, pIds] of Object.entries(dockedByTrans)) {
+      const hostPt = pos[tid] || { x: 300, y: 160 };
+      pIds.forEach((pid, idx) => {
+        const dockY = hostPt.y + (idx + 1) * rowStep;
+        pos[pid] = { x: hostPt.x, y: dockY };
+        if (dockY > maxMainY) maxMainY = dockY;
       });
     }
 
-    // Arrange infrastructure/dependability failure-repair subsystem cleanly in a dedicated lower band
-    const infraY = maxMainY + 190;
-    const serverInfra = infraNodes.filter((n) => /Server/i.test(n.name));
-    const turnstileInfra = infraNodes.filter((n) => !/Server/i.test(n.name));
+    // 5. Arrange separate INFRA failure-repair cycles as clean 2-Row Diamonds (NEVER a 1D colliding line!)
+    if (infraNodes.length > 0) {
+      const infraY = maxMainY + 185;
+      const serverInfra = infraNodes.filter((n) => /Server/i.test(n.name));
+      const turnstileInfra = infraNodes.filter((n) => !/Server/i.test(n.name));
 
-    const placeBand = (list, startX, y) => {
-      list.forEach((n, idx) => {
-        pos[n.id] = { x: startX + idx * 170, y };
-      });
-    };
+      const placeCycle2D = (list, startX, topY) => {
+        if (list.length === 0) return;
+        const upP = list.find((n) => n.kind === "P" && /Up/i.test(n.name));
+        const downP = list.find((n) => n.kind === "P" && /Down|Fail/i.test(n.name) && n !== upP);
+        const failT = list.find((n) => n.kind === "T" && /Fail/i.test(n.name));
+        const repT = list.find((n) => n.kind === "T" && /Repair/i.test(n.name));
 
-    placeBand(turnstileInfra, 140, infraY);
-    placeBand(serverInfra, 140 + Math.max(turnstileInfra.length, 1) * 170 + 80, infraY);
+        if (upP && downP && failT && repT && list.length === 4) {
+          // Canonical 2-State Availability Cycle:
+          // Top row:    [Up] -----> [Fail] -----> [Down]
+          // Bottom row:               [Repair]
+          pos[upP.id]   = { x: startX,       y: topY };
+          pos[failT.id] = { x: startX + 165, y: topY };
+          pos[downP.id] = { x: startX + 330, y: topY };
+          pos[repT.id]  = { x: startX + 165, y: topY + 125 };
+        } else {
+          list.forEach((n, idx) => {
+            pos[n.id] = { x: startX + idx * 170, y: topY + (idx % 2) * 90 };
+          });
+        }
+      };
+
+      placeCycle2D(turnstileInfra, 140, infraY);
+      placeCycle2D(serverInfra, 140 + (turnstileInfra.length > 0 ? 520 : 0), infraY);
+    }
 
     return pos;
   }
@@ -1743,6 +1899,10 @@
       const dist = Math.hypot(dx, dy) || 1;
       const nx = -dy / dist;
       const ny = dx / dist;
+      // Canonical pair normal (independent of A->B vs B->A direction!) so bidirectional pairs always bow to opposite sides!
+      const canonSign = item.srcId < item.dstId ? 1 : -1;
+      const canonNx = nx * canonSign;
+      const canonNy = ny * canonSign;
 
       const relevantObs = useGravity
         ? obstacles.filter((o) => {
@@ -1760,21 +1920,26 @@
         waypoints = [{ x: pSrc.x, y: pSrc.y }, { x: pDst.x, y: pDst.y }];
         isStraight = true;
       } else if (totalInPair > 1 && directHits.length === 0) {
-        // Clean symmetric subtle separation for bidirectional pair (single gentle bend, not wavy!)
-        const off = (seenIdx === 0 ? 1 : -1) * 24;
+        // Clean symmetric opposite separation for bidirectional / antiparallel pair
+        const off = (seenIdx % 2 === 0 ? 1 : -1) * (24 + Math.floor(seenIdx / 2) * 14);
         waypoints = [
           { x: pSrc.x, y: pSrc.y },
-          { x: (pSrc.x + pDst.x) / 2 + nx * off, y: (pSrc.y + pDst.y) / 2 + ny * off },
+          { x: (pSrc.x + pDst.x) / 2 + canonNx * off, y: (pSrc.y + pDst.y) / 2 + canonNy * off },
           { x: pDst.x, y: pDst.y }
         ];
       } else {
-        // Taut minimal-bend detour: only 1 or 2 interior corners (NOT 5 wavy control points!)
-        const evalSide = (sideSign) => {
-          const numInner = dist > 420 ? 2 : 1;
+        // Test both gentle corridor nudges (for diagonal chords passing between two rows!)
+        // and full outer arches (for long horizontal feedback loops returning along a row!)
+        const allY = Object.values(positions || {}).map((p) => p.y);
+        const midDiagramY = allY.length > 0 ? (Math.min(...allY) + Math.max(...allY)) / 2 : 240;
+
+        const evalCandidate = (sideSign, archMag) => {
+          const numInner = dist > 340 ? 2 : 1;
           const pts = [{ x: pSrc.x, y: pSrc.y }];
-          const baseArch = Math.min(86, Math.max(48, dist * 0.11)) + seenIdx * 18;
+          const pairShift = totalInPair > 1 ? (seenIdx % 2 === 0 ? 18 : -18) * canonSign * sideSign : 0;
+          const baseArch = archMag + pairShift;
           for (let k = 1; k <= numInner; k++) {
-            const t = numInner === 1 ? 0.5 : (k === 1 ? 0.28 : 0.72);
+            const t = numInner === 1 ? 0.5 : (k === 1 ? 0.25 : 0.75);
             pts.push({
               x: pSrc.x + dx * t + nx * sideSign * baseArch,
               y: pSrc.y + dy * t + ny * sideSign * baseArch
@@ -1782,8 +1947,9 @@
           }
           pts.push({ x: pDst.x, y: pDst.y });
 
-          // Fast obstacle clearance relaxation keeping segments taut
-          for (let it = 0; it < 26; it++) {
+          // Fast obstacle clearance relaxation keeping segments taut and strictly on the committed sideSign!
+          const iters = archMag <= 18 ? 12 : 28;
+          for (let it = 0; it < iters; it++) {
             const forces = pts.map(() => ({ fx: 0, fy: 0 }));
             for (let k = 1; k < pts.length - 1; k++) {
               const p = pts[k];
@@ -1792,21 +1958,20 @@
                 const ox = p.x - o.x;
                 const oy = p.y - o.y;
                 const d = Math.hypot(ox, oy);
-                const safeR = o.r + 14;
+                const safeR = o.r + 18;
                 if (d < safeR) {
-                  const strength = Math.pow((safeR - d) / safeR, 1.4) * 26;
-                  if (d < 4) {
-                    forces[k].fx += nx * sideSign * strength;
-                    forces[k].fy += ny * sideSign * strength;
-                  } else {
-                    const rx = ox / d, ry = oy / d;
-                    const align = rx * (nx * sideSign) + ry * (ny * sideSign);
-                    forces[k].fx += (align >= -0.15 ? rx : nx * sideSign) * strength;
-                    forces[k].fy += (align >= -0.15 ? ry : ny * sideSign) * strength;
-                  }
+                  const strength = Math.pow((safeR - d) / safeR, 1.3) * 30;
+                  // Always push coherently toward the committed sideSign so an obstacle on the far side of the chord
+                  // never pushes the curve backward into the obstacle center!
+                  const rx = d > 2 ? ox / d : 0;
+                  const ry = d > 2 ? oy / d : 0;
+                  const align = rx * (nx * sideSign) + ry * (ny * sideSign);
+                  const ux = align >= 0.35 ? rx : nx * sideSign;
+                  const uy = align >= 0.35 ? ry : ny * sideSign;
+                  forces[k].fx += ux * strength;
+                  forces[k].fy += uy * strength;
                 }
               }
-              // Check segment midpoints against obstacles so chord never clips a node
               const prevP = pts[k - 1], nextP = pts[k + 1];
               for (const segMid of [
                 { x: (prevP.x + p.x) / 2, y: (prevP.y + p.y) / 2 },
@@ -1815,21 +1980,40 @@
                 for (const o of obstacles) {
                   if (o.id === item.srcId || o.id === item.dstId) continue;
                   const d = Math.hypot(segMid.x - o.x, segMid.y - o.y);
-                  const safeR = o.r + 10;
+                  const safeR = o.r + 14;
                   if (d < safeR) {
-                    const strength = ((safeR - d) / safeR) * 20;
+                    const strength = ((safeR - d) / safeR) * 24;
                     forces[k].fx += nx * sideSign * strength;
                     forces[k].fy += ny * sideSign * strength;
                   }
                 }
               }
-              // Mild tautness toward straight chord
-              forces[k].fx += ((prevP.x + nextP.x) / 2 - p.x) * 0.14;
-              forces[k].fy += ((prevP.y + nextP.y) / 2 - p.y) * 0.14;
+              forces[k].fx += ((prevP.x + nextP.x) / 2 - p.x) * 0.08;
+              forces[k].fy += ((prevP.y + nextP.y) / 2 - p.y) * 0.08;
+            }
+            // Segment-to-obstacle clearance: if any segment (pts[s] -> pts[s+1]) cuts near an obstacle/label,
+            // push BOTH interior endpoints of that segment toward sideSign so the chord clears the label!
+            for (let s = 0; s < pts.length - 1; s++) {
+              for (const o of obstacles) {
+                if (o.id === item.srcId || o.id === item.dstId) continue;
+                const cl = pointToSegClosest(o.x, o.y, pts[s].x, pts[s].y, pts[s + 1].x, pts[s + 1].y);
+                const safeR = o.r + 16;
+                if (cl.dist < safeR) {
+                  const push = ((safeR - cl.dist) / safeR) * 26;
+                  if (s > 0) {
+                    forces[s].fx += nx * sideSign * push;
+                    forces[s].fy += ny * sideSign * push;
+                  }
+                  if (s + 1 < pts.length - 1) {
+                    forces[s + 1].fx += nx * sideSign * push;
+                    forces[s + 1].fy += ny * sideSign * push;
+                  }
+                }
+              }
             }
             for (let k = 1; k < pts.length - 1; k++) {
-              pts[k].x += Math.max(-22, Math.min(22, forces[k].fx));
-              pts[k].y += Math.max(-22, Math.min(22, forces[k].fy));
+              pts[k].x += Math.max(-24, Math.min(24, forces[k].fx));
+              pts[k].y += Math.max(-24, Math.min(24, forces[k].fy));
             }
           }
 
@@ -1840,25 +2024,33 @@
             for (const o of obstacles) {
               if (o.id === item.srcId || o.id === item.dstId) continue;
               const sd = pointToSegDist(o.x, o.y, pts[k].x, pts[k].y, pts[k + 1].x, pts[k + 1].y);
-              if (sd < o.r) penalty += (o.r - sd) * 55;
+              if (sd < o.r) penalty += (o.r - sd) * 140;
             }
           }
           const crossings = countCrossingsWith(pts, item, routed);
           let outerBias = 0;
-          if (Math.abs(dx) > 380 && Math.abs(dy) < 120) {
+          if (Math.abs(dx) > 320 && Math.abs(dy) < 90) {
             const avgY = pts.slice(1, -1).reduce((a, p) => a + p.y, 0) / (pts.length - 2);
-            for (const o of obstacles) {
-              if (Math.abs(o.y - avgY) < 60 && o.x > Math.min(pSrc.x, pDst.x) && o.x < Math.max(pSrc.x, pDst.x)) {
-                outerBias += 110;
-              }
-            }
+            const endY = (pSrc.y + pDst.y) / 2;
+            if (endY <= midDiagramY && avgY > endY) outerBias += 130;
+            if (endY > midDiagramY && avgY < endY) outerBias += 130;
           }
-          return { pts, score: penalty + crossings * 220 + outerBias + pathLen * 0.07 };
+          return { pts, sideSign, score: penalty + crossings * 260 + outerBias + pathLen * 0.08 };
         };
 
-        const candPos = evalSide(1);
-        const candNeg = evalSide(-1);
-        waypoints = candPos.score <= candNeg.score ? candPos.pts : candNeg.pts;
+        const cands = [
+          evalCandidate(1, 16),
+          evalCandidate(-1, 16),
+          evalCandidate(1, 44),
+          evalCandidate(-1, 44),
+          evalCandidate(1, 88),
+          evalCandidate(-1, 88),
+          evalCandidate(1, 128),
+          evalCandidate(-1, 128)
+        ];
+        cands.sort((a, b) => a.score - b.score);
+        waypoints = cands[0].pts;
+        item._sideSign = cands[0].sideSign;
       }
 
       routed.push({
@@ -2160,13 +2352,14 @@
           const isOut = item.dir === "out";
           const pS = isOut ? trPt : { x: mNode.x, y: mNode.y };
           const pD = isOut ? { x: mNode.x, y: mNode.y } : trPt;
-          const dx = pD.x - pS.x;
-          const dy = pD.y - pS.y;
-          const dist = Math.hypot(dx, dy) || 1;
-          const nx = -dy / dist;
-          const ny = dx / dist;
-          const curveOff = count > 1 ? (aIdx === 0 ? 15 : -15) : 0;
-          const mid = { x: (pS.x + pD.x) / 2 + nx * curveOff, y: (pS.y + pD.y) / 2 + ny * curveOff };
+          // Canonical normal from transition -> mirror so antiparallel mirror arcs always bow to opposite sides!
+          const cdx = mNode.x - trPt.x;
+          const cdy = mNode.y - trPt.y;
+          const dist = Math.hypot(cdx, cdy) || 1;
+          const cnx = -cdy / dist;
+          const cny = cdx / dist;
+          const curveOff = count > 1 ? (aIdx % 2 === 0 ? 16 : -16) : 0;
+          const mid = { x: (pS.x + pD.x) / 2 + cnx * curveOff, y: (pS.y + pD.y) / 2 + cny * curveOff };
 
           const startPt = isOut
             ? clipProtectedPort(trPt.x, trPt.y, false, trName, trObj, mid.x, mid.y, false, useGravity)
