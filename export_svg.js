@@ -120,18 +120,19 @@ function clipRect(cx, cy, hw, hh, tx, ty) {
 }
 
 const spnGraph = Core.computeSpnArcGraph(ast, positions, { useGravity: true, useMirrors });
-const allArcs = spnGraph.arcs;
+const allArcs = [...spnGraph.arcs, ...(spnGraph.placeInputArcs || [])];
 const mirrors = spnGraph.mirrors || [];
 
-const pts = Object.values(positions);
+const realEntries = Object.entries(positions).filter(([id]) => id.startsWith("P:") || id.startsWith("T:"));
+const pts = realEntries.map(([, p]) => p);
 let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
 for (const p of pts) {
   minX = Math.min(minX, p.x); maxX = Math.max(maxX, p.x);
   minY = Math.min(minY, p.y); maxY = Math.max(maxY, p.y);
 }
 for (const m of mirrors) {
-  minX = Math.min(minX, m.x - 45); maxX = Math.max(maxX, m.x + 45);
-  minY = Math.min(minY, m.y - 30); maxY = Math.max(maxY, m.y + 36);
+  minX = Math.min(minX, m.x - 55); maxX = Math.max(maxX, m.x + 55);
+  minY = Math.min(minY, m.y - 32); maxY = Math.max(maxY, m.y + 40);
 }
 
 const padX = 115;
@@ -152,7 +153,7 @@ const colorInh = ieee ? "#111827" : "#dc2626";
 // Branch lane boxes
 let bandsSvg = "";
 const branchCoords = {};
-for (const [id, pt] of Object.entries(positions)) {
+for (const [id, pt] of realEntries) {
   const b = Core.getNodeBranch(id.slice(2));
   if (!branchCoords[b]) branchCoords[b] = { minX: Infinity, maxX: -Infinity, minY: Infinity, maxY: -Infinity };
   branchCoords[b].minX = Math.min(branchCoords[b].minX, pt.x);
@@ -259,12 +260,21 @@ for (const tr of ast.transitions) {
 
 let mirrorsSvg = "";
 for (const m of mirrors) {
-  const mStroke = ieee ? "#374151" : "#6366f1";
-  const mFill = ieee ? "#f9fafb" : "#eef2ff";
-  mirrorsSvg += `<circle cx="${m.x}" cy="${m.y}" r="${m.r}" fill="${mFill}" stroke="${mStroke}" stroke-width="1.4" stroke-dasharray="3.5,2.5" />
-  <circle cx="${m.x}" cy="${m.y}" r="${m.r - 3.5}" fill="#ffffff" stroke="${mStroke}" stroke-width="1.1" />
-  <text x="${m.x}" y="${m.y + 4}" text-anchor="middle" font-family="${fontFamily}" font-size="11" font-weight="700" fill="${mStroke}">↗</text>
-  <text x="${m.x}" y="${m.y + m.r + 12}" text-anchor="middle" font-family="${fontFamily}" font-size="9.2" font-style="italic" font-weight="600" fill="${ieee ? "#1f2937" : "#4338ca"}">↗ ${esc(m.place)}</text>`;
+  if (m.kind === "transition") {
+    const mStroke = ieee ? "#374151" : "#7c3aed";
+    const mFill = ieee ? "#f9fafb" : "#f5f3ff";
+    mirrorsSvg += `<rect x="${(m.x - 13).toFixed(1)}" y="${(m.y - 17).toFixed(1)}" width="26" height="34" rx="5" fill="${mFill}" stroke="${mStroke}" stroke-width="1.4" stroke-dasharray="3.5,2.5" />
+    <rect x="${(m.x - 5).toFixed(1)}" y="${(m.y - 11).toFixed(1)}" width="10" height="22" rx="1.5" fill="#ffffff" stroke="${mStroke}" stroke-width="1.2" />
+    <text x="${m.x}" y="${m.y + 3.5}" text-anchor="middle" font-family="${fontFamily}" font-size="9.5" font-weight="800" fill="${mStroke}">↗</text>
+    <text x="${m.x}" y="${m.y + 30}" text-anchor="middle" font-family="${fontFamily}" font-size="9.2" font-style="italic" font-weight="600" fill="${ieee ? "#1f2937" : "#5b21b6"}">↗ ${esc(m.trName)}</text>`;
+  } else {
+    const mStroke = ieee ? "#374151" : "#6366f1";
+    const mFill = ieee ? "#f9fafb" : "#eef2ff";
+    mirrorsSvg += `<circle cx="${m.x}" cy="${m.y}" r="${m.r}" fill="${mFill}" stroke="${mStroke}" stroke-width="1.4" stroke-dasharray="3.5,2.5" />
+    <circle cx="${m.x}" cy="${m.y}" r="${m.r - 3.5}" fill="#ffffff" stroke="${mStroke}" stroke-width="1.1" />
+    <text x="${m.x}" y="${m.y + 4}" text-anchor="middle" font-family="${fontFamily}" font-size="11" font-weight="700" fill="${mStroke}">↗</text>
+    <text x="${m.x}" y="${m.y + m.r + 12}" text-anchor="middle" font-family="${fontFamily}" font-size="9.2" font-style="italic" font-weight="600" fill="${ieee ? "#1f2937" : "#4338ca"}">↗ ${esc(m.place)}</text>`;
+  }
 }
 
 let legendSvg = "";

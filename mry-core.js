@@ -1527,8 +1527,8 @@
     }
 
     // 4. Assign crisp grid coordinates (snapping single-child horizontal chains to exact same Y!)
-    const colStep = 185;
-    const rowStep = 150;
+    const colStep = 190;
+    const rowStep = 176;
     const baseTopY = 160;
     let maxMainY = 260;
 
@@ -1547,11 +1547,14 @@
       });
     });
 
-    // Position vertically docked 1-Transition Mutex/Resource Places directly below (or above) their host transition!
+    // Position vertically docked 1-Transition Mutex/Resource Places directly below their host transition
+    // (accounting for the host transition's inline description & guard boundary so arrows stay taut and clear!)
     for (const [tid, pIds] of Object.entries(dockedByTrans)) {
       const hostPt = pos[tid] || { x: 300, y: 160 };
+      const hostTr = (ast.transitions || []).find((t) => `T:${t.name}` === tid);
+      const extraGuardGap = hostTr && hostTr.guard && hostTr.guard.trim() !== "" ? 24 : 0;
       pIds.forEach((pid, idx) => {
-        const dockY = hostPt.y + (idx + 1) * rowStep;
+        const dockY = hostPt.y + (idx + 1) * (rowStep + extraGuardGap);
         pos[pid] = { x: hostPt.x, y: dockY };
         if (dockY > maxMainY) maxMainY = dockY;
       });
@@ -1615,47 +1618,143 @@
     return { x: cx + dx * s, y: cy + dy * s };
   }
 
-  function clipAsymRect(cx, cy, leftW, rightW, topH, botH, tx, ty) {
-    const dx = tx - cx;
-    const dy = ty - cy;
-    if (dx === 0 && dy === 0) return { x: cx, y: cy };
-    const sx = dx > 0 ? rightW / dx : dx < 0 ? leftW / (-dx) : Infinity;
-    const sy = dy > 0 ? botH / dy : dy < 0 ? topH / (-dy) : Infinity;
-    const s = Math.min(sx, sy);
-    return { x: cx + dx * s, y: cy + dy * s };
+  /**
+   * Ray-to-Axis-Aligned-Box Exit Distance:
+   * Given a ray starting at (0,0) with unit direction (ux, uy), returns the distance t > 0
+   * where the ray exits box [xMin, xMax] x [yMin, yMax] if the ray intersects the box, or 0 otherwise.
+   */
+  function rayBoxExitT(ux, uy, xMin, xMax, yMin, yMax) {
+    let txMin, txMax, tyMin, tyMax;
+    if (Math.abs(ux) < 1e-6) {
+      if (0 < xMin || 0 > xMax) return 0;
+      txMin = -Infinity;
+      txMax = Infinity;
+    } else {
+      const t1 = xMin / ux;
+      const t2 = xMax / ux;
+      txMin = Math.min(t1, t2);
+      txMax = Math.max(t1, t2);
+    }
+    if (Math.abs(uy) < 1e-6) {
+      if (0 < yMin || 0 > yMax) return 0;
+      tyMin = -Infinity;
+      tyMax = Infinity;
+    } else {
+      const t1 = yMin / uy;
+      const t2 = yMax / uy;
+      tyMin = Math.min(t1, t2);
+      tyMax = Math.max(t1, t2);
+    }
+    const tEnter = Math.max(0, txMin, tyMin);
+    const tExit = Math.min(txMax, tyMax);
+    return tExit > tEnter ? tExit : 0;
   }
 
   /**
-   * Protected Connection Frontier:
-   * Expands the connection boundary vertically over top badges (EXP/DET/IMM)
-   * and bottom text (node name, delay, guard) so arrows NEVER cross text or tags,
-   * while keeping clean side attachment when approaching horizontally.
+   * Composite Visual Frontier Boxes:
+   * Models the exact union of a node's geometric core PLUS its server-type top badge (EXP 1/∞, DET 1, IMM π=...)
+   * PLUS its inline bottom labels (name, delay d=..., guard G: ...) so arrows treat all inline text and badges
+   * as an integral part of the element's connection boundary!
    */
   function getProtectedEnvelope(isPlace, name, tr, isEnd) {
-    const pad = isEnd ? 5 : 3;
-    const nameHalfW = Math.min(62, Math.max(28, String(name || "").length * 3.1 + 6));
+    const pad = isEnd ? 6 : 4;
+    const cleanName = String(name || "");
+    const nameHalfW = Math.min(92, Math.max(24, cleanName.length * 3.4 + 6));
+
     if (isPlace) {
+      const coreR = SPN_PLACE_R + (isEnd ? 3 : 1);
+      const boxes = [
+        // Place bottom inline name label (y = +28..+46)
+        {
+          xMin: -(nameHalfW + pad),
+          xMax: nameHalfW + pad,
+          yMin: SPN_PLACE_R - 4,
+          yMax: SPN_PLACE_R + 18 + pad
+        }
+      ];
       return {
-        // Circle core + lower text zone (name sits around y + 28..46)
-        coreR: SPN_PLACE_R + (isEnd ? 3 : 1),
-        leftW: Math.max(SPN_PLACE_R + pad, nameHalfW * 0.72),
-        rightW: Math.max(SPN_PLACE_R + pad, nameHalfW * 0.72),
-        topH: SPN_PLACE_R + pad,
-        botH: SPN_PLACE_R + 21 + pad // clears place name below circle
+        isPlace: true,
+        coreR,
+        halfW: Math.max(coreR, nameHalfW + pad),
+        topH: coreR,
+        botH: SPN_PLACE_R + 18 + pad,
+        boxes
       };
     }
+
     const dim = getSpnTransDim(tr);
+    const coreHW = dim.w / 2 + pad;
+    const coreHH = dim.h / 2 + pad;
+    const isImm = tr && tr.kind === "immediate";
     const hasDelay = tr && tr.kind === "timed";
     const hasGuard = tr && tr.guard && tr.guard.trim() !== "";
-    const topTagH = dim.h / 2 + 23 + pad; // clears top EXP/DET/IMM badge
-    const botTextH = dim.h / 2 + 19 + (hasDelay ? 13 : 0) + (hasGuard ? 16 : 0) + pad;
+
+    // 1. Top server/type badge box (EXP 1, EXP ∞, DET 1, IMM π=1 w=1)
+    const srvChars =
+      (isImm ? 3 : 4) +
+      (hasDelay ? 2 : 0) +
+      (tr && tr.priority ? String(tr.priority).length + 3 : 0) +
+      (tr && tr.weight ? String(tr.weight).length + 3 : 0);
+    const topHalfW = Math.max(20, srvChars * 2.95 + 6) + pad;
+    const topBox = {
+      xMin: -topHalfW,
+      xMax: topHalfW,
+      yMin: -(dim.h / 2 + 22 + pad),
+      yMax: -(dim.h / 2) + 3
+    };
+
+    // 2. Bottom inline transition name box
+    const boxes = [
+      { xMin: -coreHW, xMax: coreHW, yMin: -coreHH, yMax: coreHH },
+      topBox,
+      {
+        xMin: -(nameHalfW + pad),
+        xMax: nameHalfW + pad,
+        yMin: dim.h / 2 - 3,
+        yMax: dim.h / 2 + 17 + pad
+      }
+    ];
+
+    let maxHalfW = Math.max(coreHW, topHalfW, nameHalfW + pad);
+    let maxBotH = dim.h / 2 + 17 + pad;
+
+    // 3. Bottom inline delay expression box (d=... or D=...)
+    if (hasDelay) {
+      const dStr = String((tr && tr.delayExpr) || "1");
+      const delayHalfW = Math.min(80, Math.max(22, (dStr.length + 2) * 3.1 + 6)) + pad;
+      maxBotH = dim.h / 2 + 31 + pad;
+      maxHalfW = Math.max(maxHalfW, delayHalfW);
+      boxes.push({
+        xMin: -delayHalfW,
+        xMax: delayHalfW,
+        yMin: dim.h / 2 + 10,
+        yMax: maxBotH
+      });
+    }
+
+    // 4. Bottom inline guard badge box (G: ...)
+    if (hasGuard) {
+      const gStr = String(tr.guard).trim();
+      const guardHalfW = Math.min(110, Math.max(28, (gStr.length + 3) * 2.95 + 8)) + pad;
+      const gTop = dim.h / 2 + (hasDelay ? 24 : 11);
+      maxBotH = gTop + 19 + pad;
+      maxHalfW = Math.max(maxHalfW, guardHalfW);
+      boxes.push({
+        xMin: -guardHalfW,
+        xMax: guardHalfW,
+        yMin: gTop,
+        yMax: maxBotH
+      });
+    }
+
     return {
-      coreHW: dim.w / 2 + pad,
-      coreHH: dim.h / 2 + pad,
-      leftW: Math.max(dim.w / 2 + pad + 8, nameHalfW * 0.62),
-      rightW: Math.max(dim.w / 2 + pad + 8, nameHalfW * 0.62),
-      topH: topTagH,
-      botH: botTextH
+      isPlace: false,
+      coreHW,
+      coreHH,
+      halfW: maxHalfW,
+      topH: dim.h / 2 + 22 + pad,
+      botH: maxBotH,
+      boxes
     };
   }
 
@@ -1673,33 +1772,45 @@
     const ux = dx / dist;
     const uy = dy / dist;
 
-    if (isPlace) {
-      // Only expand when approaching/leaving through the bottom name cone (uy > 0.35)
-      if (uy > 0.35) {
-        const ptEnv = clipAsymRect(cx, cy, env.leftW, env.rightW, env.topH, env.botH, tx, ty);
-        // Smooth blend near cone boundary (0.35..0.60) to avoid sudden jump
-        const ptCirc = clipCircle(cx, cy, env.coreR, tx, ty);
-        const alpha = Math.min(1, (uy - 0.35) / 0.25);
-        return {
-          x: ptCirc.x + (ptEnv.x - ptCirc.x) * alpha,
-          y: ptCirc.y + (ptEnv.y - ptCirc.y) * alpha
-        };
-      }
-      return clipCircle(cx, cy, env.coreR, tx, ty);
+    let tMax = isPlace ? env.coreR : rayBoxExitT(ux, uy, -env.coreHW, env.coreHW, -env.coreHH, env.coreHH);
+    for (const b of env.boxes) {
+      const tb = rayBoxExitT(ux, uy, b.xMin, b.xMax, b.yMin, b.yMax);
+      if (tb > tMax) tMax = tb;
     }
-
-    // Transition: clear BOTH top badge cone (uy < -0.32) AND bottom name/delay/guard cone (uy > 0.32)
-    // While keeping horizontal arrows cleanly attached to the transition bar!
-    const absUy = Math.abs(uy);
-    const ptBar = clipRect(cx, cy, env.coreHW, env.coreHH, tx, ty);
-    if (absUy <= 0.30) {
-      return ptBar;
-    }
-    const ptEnv = clipAsymRect(cx, cy, env.leftW, env.rightW, env.topH, env.botH, tx, ty);
-    const alpha = Math.min(1, (absUy - 0.30) / 0.25);
     return {
-      x: ptBar.x + (ptEnv.x - ptBar.x) * alpha,
-      y: ptBar.y + (ptEnv.y - ptBar.y) * alpha
+      x: cx + ux * tMax,
+      y: cy + uy * tMax
+    };
+  }
+
+  /**
+   * Composite Connection Frontier for Shadow/Mirror Nodes (Place Mirrors & Incoming Transition Mirrors):
+   * Includes both the mirror symbol (double-circle or transition capsule) AND its "↗ Name" label below it
+   * so connectors never pass through the mirror's naming text!
+   */
+  function clipMirrorPort(mNode, tx, ty, isEnd) {
+    const pad = isEnd ? 5 : 3;
+    const dx = tx - mNode.x;
+    const dy = ty - mNode.y;
+    const dist = Math.hypot(dx, dy) || 1;
+    const ux = dx / dist;
+    const uy = dy / dist;
+
+    const isTransMirror = mNode.kind === "transition";
+    const coreR = mNode.r || 16;
+    const coreBot = isTransMirror ? 18 : coreR;
+    let tMax = isTransMirror
+      ? rayBoxExitT(ux, uy, -(13 + pad), 13 + pad, -(18 + pad), 18 + pad)
+      : coreR + pad;
+
+    const labelStr = String(mNode.label || mNode.place || mNode.trName || "");
+    const lblHalfW = Math.min(86, Math.max(24, (labelStr.length + 2) * 3.05 + 6)) + pad;
+    const tLbl = rayBoxExitT(ux, uy, -lblHalfW, lblHalfW, coreBot - 3, coreBot + 16 + pad);
+    if (tLbl > tMax) tMax = tLbl;
+
+    return {
+      x: mNode.x + ux * tMax,
+      y: mNode.y + uy * tMax
     };
   }
 
@@ -1856,12 +1967,31 @@
       pairCount[key] = (pairCount[key] || 0) + 1;
     }
 
-    // 2. Build node obstacle list (nodes + label protection halos)
+    // 2. Build node obstacle list (nodes + server-type badges + inline name/delay/guard protection halos)
+    const realNodeEntries = Object.entries(positions || {}).filter(
+      ([id]) => id.startsWith("P:") || id.startsWith("T:")
+    );
     const obstacles = [];
-    for (const [id, pt] of Object.entries(positions || {})) {
+    for (const [id, pt] of realNodeEntries) {
       const isPlace = id.startsWith("P:");
-      obstacles.push({ id, x: pt.x, y: pt.y, r: isPlace ? 54 : 52 });
-      obstacles.push({ id, x: pt.x, y: pt.y + (isPlace ? 42 : 44), r: 27 });
+      const name = id.slice(2);
+      const tr = !isPlace ? transByName[name] : null;
+      const env = getProtectedEnvelope(isPlace, name, tr, true);
+      obstacles.push({ id, x: pt.x, y: pt.y, r: isPlace ? 54 : 50 });
+      // Bottom inline text / description halo (plus flanking circles for wide names/guards)
+      obstacles.push({ id, x: pt.x, y: pt.y + (isPlace ? 40 : 44), r: 30 });
+      if (env.halfW > 42) {
+        const wingX = Math.min(54, env.halfW - 18);
+        obstacles.push({ id, x: pt.x - wingX, y: pt.y + (isPlace ? 38 : 42), r: 22 });
+        obstacles.push({ id, x: pt.x + wingX, y: pt.y + (isPlace ? 38 : 42), r: 22 });
+      }
+      if (!isPlace) {
+        // Top server-type badge halo (EXP 1/∞, DET 1, IMM)
+        obstacles.push({ id, x: pt.x, y: pt.y - 38, r: 26 });
+        if (tr && (tr.kind === "timed" || (tr.guard && tr.guard.trim() !== ""))) {
+          obstacles.push({ id, x: pt.x, y: pt.y + Math.min(72, env.botH - 6), r: 28 });
+        }
+      }
     }
 
     // Helper: count strict crossings of candidate polyline against already-routed direct arcs
@@ -2203,10 +2333,290 @@
       };
     });
 
-    // 6. Structured, Grid-Aligned & Zero-Crossing Shadow/Mirror Place Dock Layout!
+    // 6. Structured, Collision-Free Shadow/Mirror Dock Layout (Transition Mirrors + Incoming Place Mirrors!)
     const mirrors = [];
     const mirrorArcRouted = [];
-    const realNodeEntries = Object.entries(positions || {});
+    const placeInputArcs = [];
+
+    const getMirrorEnv = (labelStr, kind) => {
+      const halfW = Math.min(72, Math.max(40, (String(labelStr || "").length + 2) * 2.75 + 8));
+      return {
+        halfW,
+        topH: kind === "transition" ? 19 : 18,
+        botH: (kind === "transition" ? 18 : MIRROR_R) + 16
+      };
+    };
+
+    const absAngleDiff = (a1, a2) => {
+      const d = a1 - a2;
+      return Math.abs(Math.atan2(Math.sin(d), Math.cos(d)));
+    };
+
+    /**
+     * Docks a mirror node (either Place mirror around Transition, or Incoming Transition mirror around Place)
+     * respecting custom user-dragged coordinates (`positions[mirrorId]`), input/output hemisphere separation,
+     * same-host ray angle locking, connector-through-mirror clearance, and automatic arrow shaft lengthening!
+     */
+    const placeMirrorAroundHost = (
+      mirrorId,
+      hostId,
+      hostPt,
+      hostIsPlace,
+      hostName,
+      hostTr,
+      targetPt,
+      isOutFromHost,
+      labelStr,
+      kind
+    ) => {
+      const mirEnv = getMirrorEnv(labelStr, kind);
+      const hostEnv = getProtectedEnvelope(hostIsPlace, hostName, hostTr, true);
+
+      // 1. If user manually dragged & positioned this mirror, honor their custom position!
+      const customPt = positions && positions[mirrorId];
+      if (customPt && Number.isFinite(customPt.x) && Number.isFinite(customPt.y)) {
+        return {
+          x: customPt.x,
+          y: customPt.y,
+          envHalfW: mirEnv.halfW,
+          envTopH: mirEnv.topH,
+          envBotH: mirEnv.botH
+        };
+      }
+
+      // 2. Build hemisphere-segregated dock slots that automatically adapt to host & mirror text widths!
+      const minSideDx = Math.round(Math.max(130, hostEnv.halfW + mirEnv.halfW + 24) / 5) * 5;
+      const outerSideDx = minSideDx + 105;
+      const topRowY1 = -(Math.round(Math.max(130, hostEnv.topH + mirEnv.botH + 46) / 5) * 5);
+      const botRowY1 = Math.round(Math.max(135, hostEnv.botH + mirEnv.topH + 46) / 5) * 5;
+      const topRowY2 = topRowY1 - 65;
+      const botRowY2 = botRowY1 + 65;
+
+      const xInSide = [-minSideDx, -outerSideDx];
+      const xOutSide = [minSideDx, outerSideDx];
+      const ySideRows = [-98, -33, 32, 97, -163, 162];
+
+      const primaryCols = isOutFromHost ? xOutSide : xInSide;
+      const secondaryCols = isOutFromHost ? xInSide : xOutSide;
+      const candidates = [];
+
+      // Primary hemisphere vertical columns (inputs on left, outputs on right)
+      for (const dx of primaryCols) {
+        for (const dy of ySideRows) {
+          candidates.push({ x: hostPt.x + dx, y: hostPt.y + dy, prefBonus: -28 });
+        }
+      }
+
+      // Top & bottom horizontal shelves — segregated by input/output hemisphere first, with STAGGERED outer row!
+      const priShelfX1 = isOutFromHost ? [115, 0, 225] : [-115, 0, -225];
+      const secShelfX1 = isOutFromHost ? [-115, -225] : [115, 225];
+
+      for (const dx of priShelfX1) {
+        candidates.push({
+          x: hostPt.x + dx,
+          y: hostPt.y + (isOutFromHost ? botRowY1 : topRowY1),
+          prefBonus: -18
+        });
+        candidates.push({
+          x: hostPt.x + dx,
+          y: hostPt.y + (isOutFromHost ? topRowY1 : botRowY1),
+          prefBonus: -4
+        });
+      }
+      for (const dx of secShelfX1) {
+        candidates.push({ x: hostPt.x + dx, y: hostPt.y + topRowY1, prefBonus: 12 });
+        candidates.push({ x: hostPt.x + dx, y: hostPt.y + botRowY1, prefBonus: 12 });
+      }
+
+      // Outer staggered shelves (dx = ±65, ±180 — never collinear with dx = 0, ±115!)
+      const stagX = isOutFromHost ? [65, 180, -65, -180] : [-65, -180, 65, 180];
+      for (const dx of stagX) {
+        candidates.push({ x: hostPt.x + dx, y: hostPt.y + topRowY2, prefBonus: 26 });
+        candidates.push({ x: hostPt.x + dx, y: hostPt.y + botRowY2, prefBonus: 26 });
+      }
+
+      // Secondary hemisphere fallback columns
+      for (const dx of secondaryCols) {
+        for (const dy of ySideRows) {
+          candidates.push({ x: hostPt.x + dx, y: hostPt.y + dy, prefBonus: 20 });
+        }
+      }
+
+      // Extra wide ring if a shared resource node has many mirrors
+      for (const dx of [-290, -195, -95, 95, 195, 290]) {
+        for (const dy of [-225, -155, -85, 85, 155, 225]) {
+          candidates.push({ x: hostPt.x + dx, y: hostPt.y + dy, prefBonus: 48 });
+        }
+      }
+
+      const MIN_ARROW_SHAFT = 46;
+      let best = null;
+
+      for (const cand of candidates) {
+        let cx = Math.round(cand.x / 5) * 5;
+        let cy = Math.round(cand.y / 5) * 5;
+
+        // Ensure the clipped arrow shaft between host composite boundary and mirror composite boundary
+        // has at least MIN_ARROW_SHAFT length (automatically pushes mirror out if inline text/guard is deep!)
+        const tmpMir = { x: cx, y: cy, r: MIRROR_R, kind, label: labelStr };
+        const pHostClip = clipProtectedPort(
+          hostPt.x, hostPt.y, hostIsPlace, hostName, hostTr, cx, cy, !isOutFromHost, useGravity
+        );
+        const pMirClip = clipMirrorPort(tmpMir, hostPt.x, hostPt.y, isOutFromHost);
+        const curShaft = Math.hypot(pMirClip.x - pHostClip.x, pMirClip.y - pHostClip.y);
+        if (curShaft < MIN_ARROW_SHAFT) {
+          const rdx = cx - hostPt.x;
+          const rdy = cy - hostPt.y;
+          const rLen = Math.hypot(rdx, rdy) || 1;
+          const extraPush = MIN_ARROW_SHAFT - curShaft + 6;
+          cx = Math.round((cx + (rdx / rLen) * extraPush) / 5) * 5;
+          cy = Math.round((cy + (rdy / rLen) * extraPush) / 5) * 5;
+        }
+
+        const relX = cx - hostPt.x;
+        const relY = cy - hostPt.y;
+        const candAng = Math.atan2(relY, relX);
+
+        // 1. Never overlap ANY real node (including its full top server badge & bottom inline text/guard envelope!)
+        // and never route the mirror connector ray through another real node!
+        let blocked = false;
+        let nodeRayPen = 0;
+        for (const [nid, npt] of realNodeEntries) {
+          const nIsPlace = nid.startsWith("P:");
+          const nName = nid.slice(2);
+          const nTr = !nIsPlace ? transByName[nName] : null;
+          const nEnv = getProtectedEnvelope(nIsPlace, nName, nTr, true);
+          if (Math.hypot((cx - npt.x) / 86, (cy - (npt.y + 8)) / 68) < 1.0) {
+            blocked = true;
+            break;
+          }
+          const minXDist = Math.min(115, nEnv.halfW + mirEnv.halfW * 0.65 + 8);
+          const yOverlap =
+            cy + mirEnv.botH + 6 > npt.y - nEnv.topH &&
+            cy - mirEnv.topH - 6 < npt.y + nEnv.botH;
+          if (Math.abs(cx - npt.x) < minXDist && yOverlap) {
+            blocked = true;
+            break;
+          }
+          if (nid !== hostId) {
+            const dRayNode = pointToSegDist(npt.x, npt.y + 6, hostPt.x, hostPt.y, cx, cy);
+            if (dRayNode < 56) {
+              nodeRayPen += (56 - dRayNode) * 35 + 650;
+            }
+          }
+        }
+        if (blocked) continue;
+
+        // 2. Never overlap ANY already-placed mirror (full label envelope) OR share a ray angle from the same host!
+        for (const m of mirrors) {
+          const pairHalfW = Math.max(96, ((m.envHalfW || 48) + mirEnv.halfW) * 0.85);
+          if (
+            Math.hypot((cx - m.x) / pairHalfW, (cy - m.y) / 58) < 1.0 ||
+            Math.hypot((cx - m.x) / 80, (cy - m.y) / 48) < 1.0
+          ) {
+            blocked = true;
+            break;
+          }
+          // Same-Host Ray Angle Lock: forbids placing an outer mirror behind an inner mirror on the same ray!
+          if (m.hostId === hostId) {
+            const mAng = Math.atan2(m.y - hostPt.y, m.x - hostPt.x);
+            if (absAngleDiff(candAng, mAng) < 0.30) {
+              blocked = true;
+              break;
+            }
+          }
+          // Connector-Through-Mirror-Body Rejection: new connector (hostPt -> cand) cannot pass through existing mirror `m` or its label!
+          if (
+            pointToSegDist(m.x, m.y, hostPt.x, hostPt.y, cx, cy) < 42 ||
+            pointToSegDist(m.x, m.y + 20, hostPt.x, hostPt.y, cx, cy) < 38
+          ) {
+            blocked = true;
+            break;
+          }
+        }
+        if (blocked) continue;
+
+        // 3. New mirror cannot sit on top of any already-routed mirror connector!
+        for (const ma of [...mirrorArcRouted, ...placeInputArcs]) {
+          if (
+            pointToSegDist(cx, cy, ma.startPt.x, ma.startPt.y, ma.endPt.x, ma.endPt.y) < 42 ||
+            pointToSegDist(cx, cy + 20, ma.startPt.x, ma.startPt.y, ma.endPt.x, ma.endPt.y) < 38
+          ) {
+            blocked = true;
+            break;
+          }
+        }
+        if (blocked) continue;
+
+        // 4. Count crossings & proximity against direct arcs and existing mirror connectors
+        let crossings = 0;
+        let lineProxPen = 0;
+        for (const da of finalDirect) {
+          for (let k = 0; k < da.finalPts.length - 1; k++) {
+            const dLine = pointToSegDist(cx, cy + 10, da.finalPts[k].x, da.finalPts[k].y, da.finalPts[k + 1].x, da.finalPts[k + 1].y);
+            if (dLine < 42) lineProxPen += (42 - dLine) * 12;
+            if (da.srcId !== hostId && da.dstId !== hostId) {
+              if (segmentsIntersect(hostPt, { x: cx, y: cy }, da.finalPts[k], da.finalPts[k + 1])) {
+                crossings++;
+              }
+            }
+          }
+        }
+        for (const ma of [...mirrorArcRouted, ...placeInputArcs]) {
+          if (segmentsIntersect(hostPt, { x: cx, y: cy }, ma.startPt, ma.endPt)) {
+            crossings += 2;
+          }
+        }
+
+        const dHost = Math.hypot(relX, relY);
+        const dOrig = Math.hypot(cx - targetPt.x, cy - targetPt.y);
+        const score = dHost * 1.15 + dOrig * 0.08 + crossings * 420 + lineProxPen + nodeRayPen + cand.prefBonus;
+        if (!best || score < best.score) {
+          best = {
+            x: cx,
+            y: cy,
+            score,
+            envHalfW: mirEnv.halfW,
+            envTopH: mirEnv.topH,
+            envBotH: mirEnv.botH
+          };
+        }
+      }
+
+      if (!best) {
+        // Guaranteed collision-free spiral fallback if a shared hub has many mirrors
+        for (let r = 150; r <= 420 && !best; r += 45) {
+          for (let aIdx = 0; aIdx < 24; aIdx++) {
+            const ang = ((aIdx * 15 + (isOutFromHost ? 0 : 180)) * Math.PI) / 180;
+            const cx = Math.round((hostPt.x + Math.cos(ang) * r) / 5) * 5;
+            const cy = Math.round((hostPt.y + Math.sin(ang) * r) / 5) * 5;
+            const hitReal = realNodeEntries.some(([, npt]) => Math.hypot((cx - npt.x) / 86, (cy - npt.y) / 68) < 1.0);
+            if (hitReal) continue;
+            const hitMir = mirrors.some((m) => Math.hypot((cx - m.x) / 86, (cy - m.y) / 52) < 1.0);
+            if (hitMir) continue;
+            best = {
+              x: cx,
+              y: cy,
+              envHalfW: mirEnv.halfW,
+              envTopH: mirEnv.topH,
+              envBotH: mirEnv.botH
+            };
+            break;
+          }
+        }
+      }
+      if (!best) {
+        const idx = mirrors.length;
+        best = {
+          x: hostPt.x + (isOutFromHost ? minSideDx : -minSideDx),
+          y: hostPt.y + topRowY1 - idx * 64,
+          envHalfW: mirEnv.halfW,
+          envTopH: mirEnv.topH,
+          envBotH: mirEnv.botH
+        };
+      }
+      return best;
+    };
 
     // Group mirror entries by host transition so inputs & outputs dock symmetrically!
     const groupsByTrans = new Map();
@@ -2221,13 +2631,14 @@
       return pa.y - pb.y || pa.x - pb.x || a.localeCompare(b);
     });
 
+    // 6A. Dock Place Mirrors around their host Transitions (`M:trName:place`)
     for (const trName of sortedTransNames) {
-      const trPt = positions[`T:${trName}`];
+      const hostId = `T:${trName}`;
+      const trPt = positions[hostId];
       const trObj = transByName[trName];
       if (!trPt) continue;
 
       const list = groupsByTrans.get(trName).sort((a, b) => {
-        // Order: inputs first, then outputs, then by original place Y/X
         const aOut = a.arcs.every((x) => x.dir === "out") ? 1 : 0;
         const bOut = b.arcs.every((x) => x.dir === "out") ? 1 : 0;
         if (aOut !== bOut) return aOut - bOut;
@@ -2236,123 +2647,45 @@
         return pa.y - pb.y || pa.x - pb.x || a.place.localeCompare(b.place);
       });
 
-      // Structured architectural dock slots around the transition (grid-aligned shelves, NOT random angles!)
-      const buildDockSlots = (isOutOnly) => {
-        const shelves = [];
-        // Preferred side: inputs dock Left/Top, outputs dock Right/Bottom (fallback to all shelves if occupied)
-        const xLeft = [-122, -218];
-        const xRight = [122, 218];
-        const yRows = [-102, -36, 36, 108, -166, 174];
-        const topRowX = [-105, 0, 105, -205, 205];
-
-        // Side shelves (clean vertical columns!)
-        const primaryCols = isOutOnly ? xRight : xLeft;
-        const secondaryCols = isOutOnly ? xLeft : xRight;
-        for (const dx of primaryCols) {
-          for (const dy of yRows) shelves.push({ x: trPt.x + dx, y: trPt.y + dy, prefBonus: -22 });
-        }
-        // Top & Bottom horizontal shelves (clean horizontal rows!)
-        for (const dx of topRowX) {
-          shelves.push({ x: trPt.x + dx, y: trPt.y - 108, prefBonus: isOutOnly ? 8 : -10 });
-          shelves.push({ x: trPt.x + dx, y: trPt.y + 116, prefBonus: isOutOnly ? -10 : 8 });
-          shelves.push({ x: trPt.x + dx, y: trPt.y - 172, prefBonus: 24 });
-          shelves.push({ x: trPt.x + dx, y: trPt.y + 180, prefBonus: 24 });
-        }
-        for (const dx of secondaryCols) {
-          for (const dy of yRows) shelves.push({ x: trPt.x + dx, y: trPt.y + dy, prefBonus: 14 });
-        }
-        return shelves;
-      };
-
       for (const grp of list) {
         const plPt = positions[`P:${grp.place}`] || trPt;
         const isOutOnly = grp.arcs.every((a) => a.dir === "out");
-        const candidates = buildDockSlots(isOutOnly);
-
-        let best = null;
-        for (const cand of candidates) {
-          const cx = Math.round(cand.x / 5) * 5;
-          const cy = Math.round(cand.y / 5) * 5;
-
-          // Never cover host transition's name or top tag
-          const relX = cx - trPt.x;
-          const relY = cy - trPt.y;
-          if (Math.abs(relX) < 82 && relY > 8 && relY < 76) continue;
-          if (Math.abs(relX) < 52 && relY < -14 && relY > -70) continue;
-
-          // Zero overlap with ALL real nodes (including label envelopes)
-          let blocked = false;
-          for (const [, npt] of realNodeEntries) {
-            if (Math.hypot((cx - npt.x) / 94, (cy - (npt.y + 10)) / 74) < 1.0) {
-              blocked = true;
-              break;
-            }
-          }
-          if (blocked) continue;
-
-          // Zero overlap with ALL already placed mirrors (including ↗ Name labels)
-          for (const m of mirrors) {
-            if (Math.hypot((cx - m.x) / 106, (cy - m.y) / 62) < 1.0) {
-              blocked = true;
-              break;
-            }
-          }
-          if (blocked) continue;
-
-          // Count crossings of connector (trPt -> cand) AND proximity of mirror node/label to direct arcs!
-          let crossings = 0;
-          let lineProxPen = 0;
-          for (const da of finalDirect) {
-            for (let k = 0; k < da.finalPts.length - 1; k++) {
-              const dLine = pointToSegDist(cx, cy + 8, da.finalPts[k].x, da.finalPts[k].y, da.finalPts[k + 1].x, da.finalPts[k + 1].y);
-              if (dLine < 38) lineProxPen += (38 - dLine) * 10;
-              if (da.srcId !== `T:${trName}` && da.dstId !== `T:${trName}`) {
-                if (segmentsIntersect(trPt, { x: cx, y: cy }, da.finalPts[k], da.finalPts[k + 1])) {
-                  crossings++;
-                }
-              }
-            }
-          }
-          for (const ma of mirrorArcRouted) {
-            if (ma.trName === trName) continue;
-            if (segmentsIntersect(trPt, { x: cx, y: cy }, ma.startPt, ma.endPt)) {
-              crossings++;
-            }
-          }
-
-          // Prefer close, crossing-free, direction-consistent structured dock slot
-          const dHost = Math.hypot(relX, relY);
-          const dOrig = Math.hypot(cx - plPt.x, cy - plPt.y);
-          const score = dHost * 1.15 + dOrig * 0.08 + crossings * 360 + lineProxPen + cand.prefBonus;
-          if (!best || score < best.score) {
-            best = { x: cx, y: cy, score };
-          }
-        }
-
-        if (!best) {
-          const idx = mirrors.length;
-          best = { x: trPt.x + (isOutOnly ? 130 : -130), y: trPt.y - 110 - (idx % 4) * 64 };
-        }
-
         const mirrorId = `M:${trName}:${grp.place}`;
+        const best = placeMirrorAroundHost(
+          mirrorId,
+          hostId,
+          trPt,
+          false,
+          trName,
+          trObj,
+          plPt,
+          isOutOnly,
+          grp.place,
+          "place"
+        );
+
         const mNode = {
           id: mirrorId,
+          kind: "place",
+          hostId,
           trName,
           place: grp.place,
+          label: grp.place,
           x: best.x,
           y: best.y,
           r: MIRROR_R,
+          envHalfW: best.envHalfW,
+          envTopH: best.envTopH,
+          envBotH: best.envBotH,
           dirs: grp.arcs.map((a) => a.dir)
         };
         mirrors.push(mNode);
 
-        // Route crisp straight (or subtle symmetric pair) connector between T and M
         const count = grp.arcs.length;
         grp.arcs.forEach((item, aIdx) => {
           const isOut = item.dir === "out";
           const pS = isOut ? trPt : { x: mNode.x, y: mNode.y };
           const pD = isOut ? { x: mNode.x, y: mNode.y } : trPt;
-          // Canonical normal from transition -> mirror so antiparallel mirror arcs always bow to opposite sides!
           const cdx = mNode.x - trPt.x;
           const cdy = mNode.y - trPt.y;
           const dist = Math.hypot(cdx, cdy) || 1;
@@ -2363,9 +2696,9 @@
 
           const startPt = isOut
             ? clipProtectedPort(trPt.x, trPt.y, false, trName, trObj, mid.x, mid.y, false, useGravity)
-            : clipCircle(mNode.x, mNode.y, MIRROR_R + 2, mid.x, mid.y);
+            : clipMirrorPort(mNode, mid.x, mid.y, false);
           const endPt = isOut
-            ? clipCircle(mNode.x, mNode.y, MIRROR_R + 5, mid.x, mid.y)
+            ? clipMirrorPort(mNode, mid.x, mid.y, true)
             : clipProtectedPort(trPt.x, trPt.y, false, trName, trObj, mid.x, mid.y, true, useGravity);
 
           const finalPts = count > 1 ? [startPt, mid, endPt] : [startPt, endPt];
@@ -2389,8 +2722,110 @@
       }
     }
 
+    // 6B. Dock Incoming Transition Mirrors at Destination Places (`MT:place:trName`, "entrada em places"!)
+    const incomingByPlace = new Map();
+    for (const grp of mirrorGroups.values()) {
+      const outArcs = grp.arcs.filter((a) => a.dir === "out");
+      if (outArcs.length === 0) continue;
+      if (!incomingByPlace.has(grp.place)) incomingByPlace.set(grp.place, []);
+      incomingByPlace.get(grp.place).push({ trName: grp.trName, place: grp.place, arcs: outArcs });
+    }
+
+    const sortedPlaceNames = Array.from(incomingByPlace.keys()).sort((a, b) => {
+      const pa = positions[`P:${a}`] || { x: 0, y: 0 };
+      const pb = positions[`P:${b}`] || { x: 0, y: 0 };
+      return pa.y - pb.y || pa.x - pb.x || a.localeCompare(b);
+    });
+
+    for (const placeName of sortedPlaceNames) {
+      const hostId = `P:${placeName}`;
+      const plPt = positions[hostId];
+      if (!plPt) continue;
+
+      const list = incomingByPlace.get(placeName).sort((a, b) => {
+        const ta = positions[`T:${a.trName}`] || { x: 0, y: 0 };
+        const tb = positions[`T:${b.trName}`] || { x: 0, y: 0 };
+        return ta.y - tb.y || ta.x - tb.x || a.trName.localeCompare(b.trName);
+      });
+
+      for (const entry of list) {
+        const trName = entry.trName;
+        const trPt = positions[`T:${trName}`] || plPt;
+        const mirrorId = `MT:${placeName}:${trName}`;
+        // Incoming to place -> isOutFromHost = false (docks on the input/left/top side of the Place!)
+        const best = placeMirrorAroundHost(
+          mirrorId,
+          hostId,
+          plPt,
+          true,
+          placeName,
+          null,
+          trPt,
+          false,
+          trName,
+          "transition"
+        );
+
+        const mtNode = {
+          id: mirrorId,
+          kind: "transition",
+          hostId,
+          trName,
+          place: placeName,
+          label: trName,
+          x: best.x,
+          y: best.y,
+          r: MIRROR_R,
+          envHalfW: best.envHalfW,
+          envTopH: best.envTopH,
+          envBotH: best.envBotH,
+          dirs: ["out"]
+        };
+        mirrors.push(mtNode);
+
+        const count = entry.arcs.length;
+        entry.arcs.forEach((item, aIdx) => {
+          const cdx = plPt.x - mtNode.x;
+          const cdy = plPt.y - mtNode.y;
+          const dist = Math.hypot(cdx, cdy) || 1;
+          const cnx = -cdy / dist;
+          const cny = cdx / dist;
+          const curveOff = count > 1 ? (aIdx % 2 === 0 ? 16 : -16) : 0;
+          const mid = {
+            x: (mtNode.x + plPt.x) / 2 + cnx * curveOff,
+            y: (mtNode.y + plPt.y) / 2 + cny * curveOff
+          };
+
+          const startPt = clipMirrorPort(mtNode, mid.x, mid.y, false);
+          const endPt = clipProtectedPort(plPt.x, plPt.y, true, placeName, null, mid.x, mid.y, true, useGravity);
+
+          const finalPts = count > 1 ? [startPt, mid, endPt] : [startPt, endPt];
+          const pathD = tautRoundedPath(finalPts, 16);
+          const lx = count > 1 ? mid.x : startPt.x + (endPt.x - startPt.x) * 0.52;
+          const ly = count > 1 ? mid.y : startPt.y + (endPt.y - startPt.y) * 0.52;
+
+          placeInputArcs.push({
+            ...item,
+            id: `${item.id}:pmir`,
+            baseArcId: item.id,
+            isMirrored: true,
+            isPlaceInputMirror: true,
+            mirrorId: mtNode.id,
+            startPt,
+            endPt,
+            waypoints: finalPts,
+            finalPts,
+            pathD,
+            lx,
+            ly
+          });
+        });
+      }
+    }
+
     return {
       arcs: [...finalDirect, ...mirrorArcRouted],
+      placeInputArcs,
       mirrors
     };
   }
@@ -3334,6 +3769,9 @@
     computeDefaultZones,
     computeSpnArcPaths,
     computeSpnArcGraph,
+    clipProtectedPort,
+    clipMirrorPort,
+    getProtectedEnvelope,
     getNodeBranch,
     evalMercuryBool,
     evalMercuryNumeric,

@@ -970,6 +970,14 @@
           for (const [k, v] of Object.entries(autoPos)) {
             nextPos[k] = state.positions[k] || (ast.layout && ast.layout[k]) || v;
           }
+          // Preserve custom user-dragged mirror coordinates (M:tr:pl and MT:pl:tr)
+          for (const srcMap of [ast.layout || {}, state.positions || {}]) {
+            for (const [k, v] of Object.entries(srcMap)) {
+              if ((k.startsWith("M:") || k.startsWith("MT:")) && v && Number.isFinite(v.x) && Number.isFinite(v.y)) {
+                nextPos[k] = { x: v.x, y: v.y };
+              }
+            }
+          }
           state.positions = nextPos;
           const validIds = new Set(Object.keys(nextPos));
           if (ast.zones && !preserveZonesExact) {
@@ -1163,12 +1171,12 @@
     const audit = state.audit;
     const ieee = state.ieeeMode;
 
-    // Collect & route all arcs deterministically (optionally projecting long arcs to Shadow/Mirror Places)
+    // Collect & route all arcs deterministically (optionally projecting long arcs to Shadow/Mirror Places & Incoming Place Mirrors)
     const spnGraph = Core.computeSpnArcGraph(ast, state.positions, {
       useGravity: state.useGravity,
       useMirrors: state.useMirrors
     });
-    const allArcs = spnGraph.arcs;
+    const allArcs = [...spnGraph.arcs, ...(spnGraph.placeInputArcs || [])];
     const mirrors = spnGraph.mirrors || [];
     state.lastMirrors = mirrors;
 
@@ -1189,6 +1197,7 @@
       for (const a of allArcs) {
         if (focusedNodes.has(a.srcId) || focusedNodes.has(a.dstId)) {
           focusedArcs.add(a.id);
+          if (a.baseArcId) focusedArcs.add(a.baseArcId);
           focusedNodes.add(a.srcId);
           focusedNodes.add(a.dstId);
           if (a.mirrorId) focusedMirrors.add(a.mirrorId);
@@ -1202,6 +1211,7 @@
         for (const a of allArcs) {
           if (a.srcId === pid || a.dstId === pid) {
             focusedArcs.add(a.id);
+            if (a.baseArcId) focusedArcs.add(a.baseArcId);
             focusedNodes.add(a.srcId);
             focusedNodes.add(a.dstId);
             if (a.mirrorId) focusedMirrors.add(a.mirrorId);
@@ -1213,6 +1223,7 @@
         for (const a of allArcs) {
           if (a.srcId === tid || a.dstId === tid) {
             focusedArcs.add(a.id);
+            if (a.baseArcId) focusedArcs.add(a.baseArcId);
             focusedNodes.add(a.srcId);
             focusedNodes.add(a.dstId);
             if (a.mirrorId) focusedMirrors.add(a.mirrorId);
@@ -1220,11 +1231,13 @@
         }
       } else if (state.selected.type === "arc") {
         focusedArcs.add(state.selected.id);
-        const found = allArcs.find((a) => a.id === state.selected.id);
-        if (found) {
-          focusedNodes.add(found.srcId);
-          focusedNodes.add(found.dstId);
-          if (found.mirrorId) focusedMirrors.add(found.mirrorId);
+        for (const a of allArcs) {
+          if (a.id === state.selected.id || a.baseArcId === state.selected.id) {
+            focusedArcs.add(a.id);
+            focusedNodes.add(a.srcId);
+            focusedNodes.add(a.dstId);
+            if (a.mirrorId) focusedMirrors.add(a.mirrorId);
+          }
         }
       } else if (state.selected.type === "zone") {
         const z = (state.zones || []).find((x) => x.id === state.selected.id);
@@ -1360,8 +1373,9 @@
     let arcsSvg = "";
 
     for (const item of allArcs) {
-      const isSelected = !forExport && state.selected && state.selected.type === "arc" && state.selected.id === item.id;
-      const dimmed = hasFocus && !focusedArcs.has(item.id);
+      const canonicalArcId = item.baseArcId || item.id;
+      const isSelected = !forExport && state.selected && state.selected.type === "arc" && state.selected.id === canonicalArcId;
+      const dimmed = hasFocus && !focusedArcs.has(item.id) && !focusedArcs.has(canonicalArcId);
       const opacity = dimmed ? 0.12 : 1.0;
 
       const mult = String(item.arc.multiplicity || "1").trim();
@@ -1431,26 +1445,46 @@
       `;
     }
 
-    // Render Shadow / Mirror Places (visual projection of long arcs — zero changes to .mry!)
+    // Render Shadow / Mirror Nodes (Place Mirrors around Transitions + Incoming Transition Mirrors at Place Inputs!)
     let mirrorsSvg = "";
     for (const m of mirrors) {
       const mDimmed = hasFocus && !focusedMirrors.has(m.id);
       const mOpacity = mDimmed ? 0.14 : 1.0;
-      const mStroke = ieee ? "#374151" : "#6366f1";
-      const mFill = ieee ? "#f9fafb" : "#eef2ff";
-      const liveTok = simActive ? (state.simMarking[m.place] ?? 0) : null;
-      const insideTxt = simActive ? String(liveTok) : "↗";
-      const insideCol = simActive ? (liveTok > 0 ? "#047857" : "#64748b") : mStroke;
-      const mTip = `Espelho (Shadow Place) de '${m.place}' | Conectado a '${m.trName}'${simActive ? ` | Marcação ao vivo: #${m.place}=${liveTok}` : ""} | Clique para focar o lugar original`;
+      const isTransMirror = m.kind === "transition";
 
-      mirrorsSvg += `
-        <g class="spn-mirror" data-place-name="${escapeXml(m.place)}" data-tip="${escapeXml(mTip)}" opacity="${mOpacity}" style="cursor:pointer">
-          <circle cx="${m.x}" cy="${m.y}" r="${m.r}" fill="${mFill}" stroke="${mStroke}" stroke-width="1.4" stroke-dasharray="3.5,2.5" />
-          <circle cx="${m.x}" cy="${m.y}" r="${m.r - 3.5}" fill="#ffffff" stroke="${mStroke}" stroke-width="1.1" />
-          <text x="${m.x}" y="${m.y + 4}" text-anchor="middle" font-family="${simActive ? monoFamily : fontFamily}" font-size="${simActive ? "10.5" : "11"}" font-weight="800" fill="${insideCol}">${escapeXml(insideTxt)}</text>
-          <text x="${m.x}" y="${m.y + m.r + 12}" text-anchor="middle" font-family="${fontFamily}" font-size="9.2" font-style="italic" font-weight="600" fill="${ieee ? "#1f2937" : "#4338ca"}">↗ ${escapeXml(m.place)}</text>
-        </g>
-      `;
+      if (isTransMirror) {
+        const isFireable = simActive && simEnabled && simEnabled.fireable.has(m.trName);
+        const mStroke = ieee ? "#374151" : isFireable ? "#059669" : "#7c3aed";
+        const mFill = ieee ? "#f9fafb" : isFireable ? "#ecfdf5" : "#f5f3ff";
+        const targetId = `T:${m.trName}`;
+        const mTip = `Espelho de Transição '${m.trName}' (entrada em '${m.place}')${simActive ? (isFireable ? " | ▶ HABILITADA" : " | ⏸ Inativa") : ""} | Clique simples: voar até '${m.trName}' • Arraste: reposicionar espelho`;
+
+        mirrorsSvg += `
+          <g class="spn-mirror" data-mirror-id="${escapeXml(m.id)}" data-mirror-kind="T" data-target-id="${escapeXml(targetId)}" data-place-name="${escapeXml(m.place)}" data-tr-name="${escapeXml(m.trName)}" data-mx="${m.x}" data-my="${m.y}" data-tip="${escapeXml(mTip)}" opacity="${mOpacity}" style="cursor:grab">
+            <rect x="${(m.x - 13).toFixed(1)}" y="${(m.y - 17).toFixed(1)}" width="26" height="34" rx="5" fill="${mFill}" stroke="${mStroke}" stroke-width="1.4" stroke-dasharray="3.5,2.5" />
+            <rect x="${(m.x - 5).toFixed(1)}" y="${(m.y - 11).toFixed(1)}" width="10" height="22" rx="1.5" fill="#ffffff" stroke="${mStroke}" stroke-width="1.2" />
+            <text x="${m.x}" y="${m.y + 3.5}" text-anchor="middle" font-family="${fontFamily}" font-size="9.5" font-weight="800" fill="${mStroke}">↗</text>
+            <text x="${m.x}" y="${m.y + 30}" text-anchor="middle" font-family="${fontFamily}" font-size="9.2" font-style="italic" font-weight="600" fill="${ieee ? "#1f2937" : "#5b21b6"}">↗ ${escapeXml(m.trName)}</text>
+          </g>
+        `;
+      } else {
+        const mStroke = ieee ? "#374151" : "#6366f1";
+        const mFill = ieee ? "#f9fafb" : "#eef2ff";
+        const liveTok = simActive ? (state.simMarking[m.place] ?? 0) : null;
+        const insideTxt = simActive ? String(liveTok) : "↗";
+        const insideCol = simActive ? (liveTok > 0 ? "#047857" : "#64748b") : mStroke;
+        const targetId = `P:${m.place}`;
+        const mTip = `Espelho (Shadow Place) de '${m.place}' | Conectado a '${m.trName}'${simActive ? ` | Marcação ao vivo: #${m.place}=${liveTok}` : ""} | Clique simples: voar até '${m.place}' • Arraste: reposicionar espelho`;
+
+        mirrorsSvg += `
+          <g class="spn-mirror" data-mirror-id="${escapeXml(m.id)}" data-mirror-kind="P" data-target-id="${escapeXml(targetId)}" data-place-name="${escapeXml(m.place)}" data-tr-name="${escapeXml(m.trName)}" data-mx="${m.x}" data-my="${m.y}" data-tip="${escapeXml(mTip)}" opacity="${mOpacity}" style="cursor:grab">
+            <circle cx="${m.x}" cy="${m.y}" r="${m.r}" fill="${mFill}" stroke="${mStroke}" stroke-width="1.4" stroke-dasharray="3.5,2.5" />
+            <circle cx="${m.x}" cy="${m.y}" r="${m.r - 3.5}" fill="#ffffff" stroke="${mStroke}" stroke-width="1.1" />
+            <text x="${m.x}" y="${m.y + 4}" text-anchor="middle" font-family="${simActive ? monoFamily : fontFamily}" font-size="${simActive ? "10.5" : "11"}" font-weight="800" fill="${insideCol}">${escapeXml(insideTxt)}</text>
+            <text x="${m.x}" y="${m.y + m.r + 12}" text-anchor="middle" font-family="${fontFamily}" font-size="9.2" font-style="italic" font-weight="600" fill="${ieee ? "#1f2937" : "#4338ca"}">↗ ${escapeXml(m.place)}</text>
+          </g>
+        `;
+      }
     }
 
     // Render places
@@ -1882,29 +1916,28 @@
     const validTarget = hov && !isSame ? isValidConnection(src, hov, state.connectorType) : null;
     const dstPt = hov && !isSame ? state.positions[`${hov.kind}:${hov.name}`] || state.connectCursor : state.connectCursor;
 
-    // Clip start point to source border
+    // Clip start point to source composite border (clearing top server badges and bottom inline text!)
     let startPt;
     if (src.kind === "P") {
-      startPt = clipCircle(pSrc.x, pSrc.y, PLACE_R, dstPt.x, dstPt.y);
+      startPt = Core.clipProtectedPort(pSrc.x, pSrc.y, true, src.name, null, dstPt.x, dstPt.y, false, state.useGravity);
     } else {
       const tr = state.ast.transitions.find((t) => t.name === src.name);
-      const dim = tr ? getTransDim(tr) : { w: 20, h: 52 };
-      startPt = clipRect(pSrc.x, pSrc.y, dim.w / 2 + 2, dim.h / 2 + 2, dstPt.x, dstPt.y);
+      startPt = Core.clipProtectedPort(pSrc.x, pSrc.y, false, src.name, tr, dstPt.x, dstPt.y, false, state.useGravity);
     }
 
-    // Clip end point to hovered target border if hovering another node
+    // Clip end point to hovered target composite border if hovering another node
     let endPt = { x: dstPt.x, y: dstPt.y };
     let targetRing = "";
     if (hov && !isSame && state.positions[`${hov.kind}:${hov.name}`]) {
       const hp = state.positions[`${hov.kind}:${hov.name}`];
       const ringCol = validTarget ? "#10b981" : "#ef4444";
       if (hov.kind === "P") {
-        endPt = clipCircle(hp.x, hp.y, PLACE_R + 3, startPt.x, startPt.y);
+        endPt = Core.clipProtectedPort(hp.x, hp.y, true, hov.name, null, startPt.x, startPt.y, true, state.useGravity);
         targetRing = `<circle cx="${hp.x}" cy="${hp.y}" r="${PLACE_R + 6}" fill="none" stroke="${ringCol}" stroke-width="2.6" stroke-dasharray="5,3" />`;
       } else {
         const tr = state.ast.transitions.find((t) => t.name === hov.name);
         const dim = tr ? getTransDim(tr) : { w: 20, h: 52 };
-        endPt = clipRect(hp.x, hp.y, dim.w / 2 + 4, dim.h / 2 + 4, startPt.x, startPt.y);
+        endPt = Core.clipProtectedPort(hp.x, hp.y, false, hov.name, tr, startPt.x, startPt.y, true, state.useGravity);
         targetRing = `<rect x="${hp.x - dim.w / 2 - 6}" y="${hp.y - dim.h / 2 - 6}" width="${dim.w + 12}" height="${dim.h + 12}" rx="4" fill="none" stroke="${ringCol}" stroke-width="2.6" stroke-dasharray="5,3" />`;
       }
     }
@@ -2018,12 +2051,16 @@
       });
     });
 
-    // Shadow / Mirror Places (hover highlights original Place, click focuses it!)
+    // Shadow / Mirror Nodes (hover highlights original Place/Transition; drag repositions mirror; simple click flies camera to destination!)
     dom.svg.querySelectorAll(".spn-mirror").forEach((el) => {
-      const placeName = el.dataset.placeName;
+      const mirrorId = el.dataset.mirrorId;
+      const mirrorKind = el.dataset.mirrorKind || "P";
+      const targetId = el.dataset.targetId || `P:${el.dataset.placeName}`;
+      const labelName = mirrorKind === "T" ? el.dataset.trName : el.dataset.placeName;
+
       el.addEventListener("mouseenter", (e) => {
         showTooltip(el.dataset.tip, e);
-        state.codeSyncNodes = [`P:${placeName}`];
+        state.codeSyncNodes = [targetId];
         renderCodeSyncOverlay();
       });
       el.addEventListener("mousemove", (e) => moveTooltip(e));
@@ -2036,18 +2073,27 @@
         blurActiveControl();
         if (e.button !== 0) return;
         e.stopPropagation();
-        if (state.simMode) {
-          const pt = state.positions[`P:${placeName}`];
-          if (pt) {
-            state.view.x = pt.x - state.view.w / 2;
-            state.view.y = pt.y - state.view.h / 2;
-            renderCanvas();
-          }
-          return;
+        if (state.connectSource) cancelConnector();
+        if (state.cameraAnimFrame) {
+          cancelAnimationFrame(state.cameraAnimFrame);
+          state.cameraAnimFrame = null;
         }
-        focusNodeById(`P:${placeName}`);
-        renderCodeHighlight(true);
-        renderRightPanel();
+        const svgPt = clientToSvg(e.clientX, e.clientY);
+        const curX = Number(el.dataset.mx) || svgPt.x;
+        const curY = Number(el.dataset.my) || svgPt.y;
+        state.draggingMirror = {
+          mirrorId,
+          targetId,
+          labelName,
+          startClientX: e.clientX,
+          startClientY: e.clientY,
+          origX: curX,
+          origY: curY,
+          offsetX: svgPt.x - curX,
+          offsetY: svgPt.y - curY,
+          dragActivated: false,
+          moved: false
+        };
       });
     });
 
@@ -2212,13 +2258,14 @@
 
       el.addEventListener("mousedown", (e) => {
         e.stopPropagation();
-        const [trName, arcDir, idxStr] = arcId.split(":");
+        const baseArcId = arcId.replace(/:pmir$/, "");
+        const [trName, arcDir, idxStr] = baseArcId.split(":");
         const arcIdx = Number(idxStr);
         if (state.activeTool === "delete") {
           deleteArc(trName, arcDir, arcIdx);
           return;
         }
-        state.selected = { type: "arc", id: arcId, trName, arcDir, arcIdx };
+        state.selected = { type: "arc", id: baseArcId, trName, arcDir, arcIdx };
         state.activeTab = "inspector";
         updateTabButtons();
         renderCanvas();
@@ -2266,9 +2313,11 @@
       const b = state.rbdLayout.bounds;
       minX = b.minX; maxX = b.maxX; minY = b.minY; maxY = b.maxY;
     } else {
-      const pts = Object.values(state.positions);
-      if (pts.length === 0) return;
-      for (const p of pts) {
+      const entries = Object.entries(state.positions).filter(
+        ([k]) => k.startsWith("P:") || k.startsWith("T:") || (state.useMirrors && (k.startsWith("M:") || k.startsWith("MT:")))
+      );
+      if (entries.length === 0) return;
+      for (const [, p] of entries) {
         minX = Math.min(minX, p.x);
         maxX = Math.max(maxX, p.x);
         minY = Math.min(minY, p.y);
@@ -2390,6 +2439,37 @@
         state.connectCursor = clientToSvg(e.clientX, e.clientY);
         renderRubberBand();
       }
+      return;
+    }
+
+    if (state.draggingMirror) {
+      if (!state.draggingMirror.dragActivated) {
+        const sDist = Math.hypot(
+          e.clientX - state.draggingMirror.startClientX,
+          e.clientY - state.draggingMirror.startClientY
+        );
+        if (sDist < 5) return;
+        state.draggingMirror.dragActivated = true;
+      }
+      const pt = clientToSvg(e.clientX, e.clientY);
+      let nx = Math.round((pt.x - state.draggingMirror.offsetX) / 5) * 5;
+      let ny = Math.round((pt.y - state.draggingMirror.offsetY) / 5) * 5;
+      if (e.shiftKey) {
+        if (Math.abs(nx - state.draggingMirror.origX) >= Math.abs(ny - state.draggingMirror.origY)) {
+          ny = state.draggingMirror.origY;
+          state.axisGuide = { type: "H", y: ny };
+        } else {
+          nx = state.draggingMirror.origX;
+          state.axisGuide = { type: "V", x: nx };
+        }
+      } else {
+        state.axisGuide = null;
+      }
+      if (nx !== state.draggingMirror.origX || ny !== state.draggingMirror.origY) {
+        state.draggingMirror.moved = true;
+      }
+      state.positions[state.draggingMirror.mirrorId] = { x: nx, y: ny };
+      renderCanvas();
       return;
     }
 
@@ -2574,18 +2654,42 @@
       return;
     }
 
+    const didMirrorDrag = state.draggingMirror;
     const didNodeDrag = state.draggingNode;
     const didMultiDrag = state.draggingMulti;
     const didZoneDrag = state.draggingZone;
     const reparent = state.reparentState;
     const hadGuide = Boolean(state.axisGuide);
 
+    state.draggingMirror = null;
     state.draggingNode = null;
     state.draggingMulti = null;
     state.draggingZone = null;
     state.axisGuide = null;
     state.reparentState = null;
     state.isPanning = false;
+
+    if (didMirrorDrag) {
+      if (!didMirrorDrag.dragActivated) {
+        // Simple click on mirror -> smooth animated camera flight to the original Place or Transition!
+        focusNodeById(didMirrorDrag.targetId, {
+          animate: true,
+          fromPt: { x: didMirrorDrag.origX, y: didMirrorDrag.origY },
+          keepSimMode: state.simMode
+        });
+        if (!state.simMode) {
+          renderCodeHighlight(true);
+          renderRightPanel();
+        }
+      } else if (didMirrorDrag.moved) {
+        if (hadGuide) renderCanvas();
+        commitHistory();
+        setParseStatus(true, `Espelho '↗ ${didMirrorDrag.labelName}' reposicionado`);
+      } else if (hadGuide) {
+        renderCanvas();
+      }
+      return;
+    }
 
     // Quick click (without dragging > 5px) on a node in select mode -> start rubber-band connector!
     if (didNodeDrag && !didNodeDrag.dragActivated && !didNodeDrag.wasCloned && state.activeTool === "select") {
@@ -3136,17 +3240,95 @@
     syncVisualToMry(`Transição renomeada: ${oldName} → ${clean}`);
   }
 
-  function focusNodeById(nodeId) {
+  function animateCameraTo(targetX, targetY, opts = {}) {
+    if (state.cameraAnimFrame) {
+      cancelAnimationFrame(state.cameraAnimFrame);
+      state.cameraAnimFrame = null;
+    }
+    const startW = state.view.w;
+    const startH = state.view.h;
+    const startCx = state.view.x + startW / 2;
+    const startCy = state.view.y + startH / 2;
+    const travelDist = Math.hypot(targetX - startCx, targetY - startCy);
+
+    if (travelDist < 4) {
+      state.view.x = targetX - startW / 2;
+      state.view.y = targetY - startH / 2;
+      renderCanvas();
+      return;
+    }
+
+    const duration = Math.min(720, Math.max(360, 260 + travelDist * 0.36));
+    const zoomLift = travelDist > 260 ? Math.min(0.18, (travelDist - 260) / 2800) : 0;
+    const fromPt = opts.fromPt || { x: startCx, y: startCy };
+    const t0 = performance.now();
+
+    // Render canvas once up-front so selection highlight is active during flight
+    renderCanvas();
+
+    const drawFlightBeacon = (progress) => {
+      const layer = dom.svg.querySelector("#codeSyncLayer");
+      if (!layer) return;
+      const curX = fromPt.x + (targetX - fromPt.x) * progress;
+      const curY = fromPt.y + (targetY - fromPt.y) * progress;
+      const pulseR = 34 + Math.sin(progress * Math.PI) * 14;
+      const alpha = progress < 0.85 ? 0.85 : Math.max(0, (1 - progress) / 0.15) * 0.85;
+      layer.innerHTML = `
+        <line x1="${fromPt.x.toFixed(1)}" y1="${fromPt.y.toFixed(1)}" x2="${targetX.toFixed(1)}" y2="${targetY.toFixed(1)}" stroke="#6366f1" stroke-width="2.2" stroke-dasharray="8,5" opacity="${(alpha * 0.65).toFixed(2)}" />
+        <circle cx="${curX.toFixed(1)}" cy="${curY.toFixed(1)}" r="6" fill="#6366f1" opacity="${alpha.toFixed(2)}" />
+        <circle cx="${targetX.toFixed(1)}" cy="${targetY.toFixed(1)}" r="${pulseR.toFixed(1)}" fill="rgba(99, 102, 241, 0.10)" stroke="#6366f1" stroke-width="2.4" stroke-dasharray="6,3" opacity="${alpha.toFixed(2)}" />
+      `;
+    };
+
+    const step = (now) => {
+      const rawT = Math.min(1, (now - t0) / duration);
+      // Cubic ease-in-out for natural acceleration and gentle arrival deceleration
+      const easeT = rawT < 0.5 ? 4 * rawT * rawT * rawT : 1 - Math.pow(-2 * rawT + 2, 3) / 2;
+      const scale = 1 + zoomLift * Math.sin(Math.PI * easeT);
+      const curW = startW * scale;
+      const curH = startH * scale;
+      const cx = startCx + (targetX - startCx) * easeT;
+      const cy = startCy + (targetY - startCy) * easeT;
+
+      state.view.w = curW;
+      state.view.h = curH;
+      state.view.x = cx - curW / 2;
+      state.view.y = cy - curH / 2;
+      dom.svg.setAttribute("viewBox", `${state.view.x} ${state.view.y} ${state.view.w} ${state.view.h}`);
+      drawFlightBeacon(easeT);
+
+      if (rawT < 1) {
+        state.cameraAnimFrame = requestAnimationFrame(step);
+      } else {
+        state.cameraAnimFrame = null;
+        state.view.w = startW;
+        state.view.h = startH;
+        state.view.x = targetX - startW / 2;
+        state.view.y = targetY - startH / 2;
+        renderCanvas();
+      }
+    };
+
+    state.cameraAnimFrame = requestAnimationFrame(step);
+  }
+
+  function focusNodeById(nodeId, opts = {}) {
     if (!nodeId || !state.positions[nodeId]) return;
     const prefix = nodeId.slice(0, 2);
     const name = nodeId.slice(2);
-    if (prefix === "B:") state.selected = { type: "rbdBlock", id: name };
-    else if (prefix === "G:") state.selected = { type: "rbdGroup", id: name };
-    else state.selected = { type: prefix === "P:" ? "place" : "transition", id: name };
+    if (!opts.keepSimMode) {
+      if (prefix === "B:") state.selected = { type: "rbdBlock", id: name };
+      else if (prefix === "G:") state.selected = { type: "rbdGroup", id: name };
+      else state.selected = { type: prefix === "P:" ? "place" : "transition", id: name };
+    }
     const pt = state.positions[nodeId];
-    state.view.x = pt.x - state.view.w / 2;
-    state.view.y = pt.y - state.view.h / 2;
-    renderCanvas();
+    if (opts.animate !== false) {
+      animateCameraTo(pt.x, pt.y, opts);
+    } else {
+      state.view.x = pt.x - state.view.w / 2;
+      state.view.y = pt.y - state.view.h / 2;
+      renderCanvas();
+    }
   }
 
   // RBD visual editing helpers
@@ -4637,7 +4819,9 @@
     const inner = buildSvgContent(true);
     const activeMirrors = state.useMirrors ? (state.lastMirrors || []) : [];
 
-    const pts = Object.values(state.positions);
+    const pts = Object.entries(state.positions)
+      .filter(([k]) => k.startsWith("P:") || k.startsWith("T:"))
+      .map(([, v]) => v);
     let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
     for (const p of pts) {
       minX = Math.min(minX, p.x);
@@ -5131,8 +5315,23 @@
 
       if (mirrorEl) {
         e.preventDefault();
-        focusNodeById(`P:${mirrorEl.dataset.placeName}`);
-        renderRightPanel();
+        const mirrorId = mirrorEl.dataset.mirrorId;
+        const targetId = mirrorEl.dataset.targetId || `P:${mirrorEl.dataset.placeName}`;
+        const svgPt = clientToSvg(t.clientX, t.clientY);
+        const curX = Number(mirrorEl.dataset.mx) || svgPt.x;
+        const curY = Number(mirrorEl.dataset.my) || svgPt.y;
+        touchState.mode = "mirror";
+        touchState.nodeDrag = {
+          mirrorId,
+          targetId,
+          origX: curX,
+          origY: curY,
+          startX: t.clientX,
+          startY: t.clientY,
+          offsetX: svgPt.x - curX,
+          offsetY: svgPt.y - curY,
+          moved: false
+        };
         return;
       }
 
@@ -5217,14 +5416,15 @@
       return;
     }
 
-    if (touchState.mode === "node" && touchState.nodeDrag && e.touches.length === 1) {
+    if ((touchState.mode === "node" || touchState.mode === "mirror") && touchState.nodeDrag && e.touches.length === 1) {
       e.preventDefault();
       const t = e.touches[0];
       const nd = touchState.nodeDrag;
       if (!nd.moved && Math.hypot(t.clientX - nd.startX, t.clientY - nd.startY) < 7) return;
       nd.moved = true;
       const pt = clientToSvg(t.clientX, t.clientY);
-      state.positions[nd.nodeId] = {
+      const posKey = touchState.mode === "mirror" ? nd.mirrorId : nd.nodeId;
+      state.positions[posKey] = {
         x: Math.round((pt.x - nd.offsetX) / 5) * 5,
         y: Math.round((pt.y - nd.offsetY) / 5) * 5
       };
@@ -5233,7 +5433,19 @@
   }, { passive: false });
 
   dom.svgStage.addEventListener("touchend", () => {
-    if (touchState.mode === "node" && touchState.nodeDrag) {
+    if (touchState.mode === "mirror" && touchState.nodeDrag) {
+      const nd = touchState.nodeDrag;
+      if (nd.moved) {
+        commitHistory();
+      } else {
+        focusNodeById(nd.targetId, {
+          animate: true,
+          fromPt: { x: nd.origX, y: nd.origY },
+          keepSimMode: state.simMode
+        });
+        if (!state.simMode) renderRightPanel();
+      }
+    } else if (touchState.mode === "node" && touchState.nodeDrag) {
       const nd = touchState.nodeDrag;
       if (nd.moved) {
         commitHistory();
