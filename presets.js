@@ -82,15 +82,15 @@ SPN ColdStandbySystem {
         inputs = [Failed, Repairman_Free],
         outputs = [
             Repairman_Free,
-            Active_Up("IF(#Active_Up=0):(1)ELSE(0)"),
-            Standby_Up("IF(#Active_Up>0):(1)ELSE(0)")
+            Active_Up(" IF(#Active_Up=0):(1)ELSE(0)"),
+            Standby_Up(" IF(#Active_Up>0):(1)ELSE(0)")
         ],
-        enablingFunction = "(#Failed>0)",
+        guardExpression = (#Failed > 0),
         delay = mttrUnit
     );
 
-    metric availability = stationaryAnalysis(expression="P{#Active_Up>0}");
-    metric fullRedundancy = stationaryAnalysis(expression="P{(#Active_Up=1)AND(#Standby_Up=1)}");
+    metric availability = stationarySimulation(expression="P{#Active_Up>0}");
+    metric fullRedundancy = stationarySimulation(expression="P{(#Active_Up=1)AND(#Standby_Up=1)}");
 }
 
 main {

@@ -6462,9 +6462,9 @@
   dom.btnExportMry.addEventListener("click", () => {
     if (!state.ast) return;
     closeExportMenu();
-    const code = Core.generateMry(state.ast, { includeLayoutComment: false });
+    const code = Core.generateMry(state.ast, { includeLayoutComment: false, ensureMainBlock: true });
     downloadBlob(`${state.ast.modelName || "model"}.mry`, code, "text/plain;charset=utf-8");
-    showToast(`Baixado ${state.ast.modelName || "model"}.mry`);
+    showToast(`Baixado ${state.ast.modelName || "model"}.mry (compatível com Mercury CLI)`);
   });
   dom.btnExportSvg.addEventListener("click", () => {
     if (!state.ast) return;

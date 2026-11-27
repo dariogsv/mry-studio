@@ -49,7 +49,7 @@
         const start = i;
         while (i < len && source[i] !== "\n") advance();
         const text = source.slice(start, i);
-        if (text.includes("@mry-layout")) layoutComments.push(text);
+        if (text.includes("@mry-layout") || text.includes("@mry-koon")) layoutComments.push(text);
         continue;
       }
 
@@ -62,7 +62,7 @@
         }
         if (i < len) advance(2);
         const text = source.slice(start, i);
-        if (text.includes("@mry-layout")) layoutComments.push(text);
+        if (text.includes("@mry-layout") || text.includes("@mry-koon")) layoutComments.push(text);
         continue;
       }
 
@@ -220,12 +220,12 @@
           next(); // '('
           if (peek().type === "STRING" && peek(1).type === ")") {
             const s = next();
-            multiplicity = s.value;
+            multiplicity = s.value.trim();
             isStringExpr = true;
             expect(")");
           } else {
             const rawMult = readRawUntil([")"]);
-            multiplicity = rawMult || "1";
+            multiplicity = (rawMult || "1").trim();
             isStringExpr = false;
             expect(")");
           }
@@ -403,11 +403,12 @@
             tr.serverType = readRawUntil([",", ")"]).replace(/^"|"$/g, "");
           }
         } else if (propKey === "guard" || propKey === "enablingFunction" || propKey === "guardExpression") {
-          tr.guardKey = propKey;
+          tr.guardKey = kind === "timed" ? "guardExpression" : "enablingFunction";
           if (peek().type === "STRING") {
-            tr.guard = next().value;
+            tr.guard = next().value.trim();
           } else {
-            tr.guard = readRawUntil([",", ")"]).replace(/^"|"$/g, "");
+            const rawG = readRawUntil([",", ")"]).replace(/^"|"$/g, "").trim();
+            tr.guard = rawG.replace(/==/g, "=").replace(/!=/g, "/=");
           }
         } else if (propKey === "priority") {
           tr.priority = readRawUntil([",", ")"]);
@@ -494,17 +495,24 @@
     }
 
     function parseRbdGroupStatement(groupKind) {
-      const startTok = next(); // series | parallel | kooN | koutofn | kofn
+      const startTok = next(); // series | parallel | kooN | koutofn | kofn | koon
       const nameTok = expect("IDENT");
       const children = [];
       let k = "";
+      let n = "";
+      let mttf = "";
+      let mttr = "";
       expect("(");
       while (peek().type !== ")" && peek().type !== "EOF") {
         if (peek().type === "IDENT" && peek(1).type === "=") {
           const pk = next().value;
           next(); // '='
           const pv = readRawUntil([",", ")"]);
-          if (pk.toLowerCase() === "k") k = pv;
+          const pkLow = pk.toLowerCase();
+          if (pkLow === "k") k = pv;
+          else if (pkLow === "n") n = pv;
+          else if (pkLow === "mttf") mttf = pv;
+          else if (pkLow === "mttr") mttr = pv;
         } else {
           const item = readRawUntil([",", ")"]);
           if (item) children.push(item);
@@ -517,6 +525,9 @@
         name: nameTok.value,
         kind: groupKind, // "series" | "parallel" | "kooN"
         k: groupKind === "kooN" ? (k || "1") : "",
+        n: groupKind === "kooN" ? n : "",
+        mttf: groupKind === "kooN" ? mttf : "",
+        mttr: groupKind === "kooN" ? mttr : "",
         children,
         line: startTok.line
       };
@@ -541,7 +552,8 @@
       otherStatements: []
     };
 
-    // Parse layout/zones comment if present
+    const koonCommentChildren = {};
+    // Parse layout/zones and @mry-koon comments if present
     for (const lc of layoutComments) {
       const m = lc.match(/@mry-layout\s+(\{[\s\S]*?\})\s*(?:\*\/)?$/);
       if (m) {
@@ -557,6 +569,12 @@
           // Ignore malformed layout hint safely
         }
       }
+      const km = lc.match(/@mry-koon\s+([A-Za-z_][A-Za-z0-9_]*)\s*:\s*([^\n*]+?)\s*(?:\*\/)?$/);
+      if (km) {
+        const gName = km[1].trim();
+        const chList = km[2].split(",").map((s) => s.trim()).filter(Boolean);
+        if (chList.length > 0) koonCommentChildren[gName] = chList;
+      }
     }
 
     while (peek().type !== "EOF") {
@@ -564,8 +582,14 @@
 
       if (t.type === "IDENT" && t.value === "SPN") {
         next(); // SPN
+        const spnName = expect("IDENT").value;
+        // Skip auto-generated Mercury 6.2 CLI currentSPN bootstrap block (<ModelName>_Init)
+        if (/_Init$/.test(spnName)) {
+          readBalancedBlock("{", "}");
+          continue;
+        }
         ast.modelType = "SPN";
-        ast.modelName = expect("IDENT").value;
+        ast.modelName = spnName;
         expect("{");
         while (peek().type !== "}" && peek().type !== "EOF") {
           const st = peek();
@@ -599,7 +623,7 @@
             ast.groups.push(parseRbdGroupStatement("series"));
           } else if (st.type === "IDENT" && st.value === "parallel") {
             ast.groups.push(parseRbdGroupStatement("parallel"));
-          } else if (st.type === "IDENT" && /^(kooN|koutofn|kofn)$/i.test(st.value)) {
+          } else if (st.type === "IDENT" && /^(kooN|koon|koutofn|kofn)$/i.test(st.value)) {
             ast.groups.push(parseRbdGroupStatement("kooN"));
           } else if (st.type === "IDENT" && st.value === "top") {
             next(); // top
@@ -616,7 +640,12 @@
         expect("}");
       } else if (t.type === "IDENT" && t.value === "main") {
         next(); // main
-        ast.mainBlock = readBalancedBlock("{", "}");
+        let rawMain = readBalancedBlock("{", "}");
+        // Strip auto-injected Mercury CLI bootstrap statements from mainBlock
+        rawMain = rawMain
+          .replace(/^[ \t]*setIntegerParameters\s*\([^;]*\)\s*;\s*\r?\n?/gm, "")
+          .replace(/^[ \t]*_init\s*=\s*solve\s*\(\s*[A-Za-z0-9_]+_Init\s*,\s*_init_m\s*\)\s*;\s*\r?\n?/gm, "");
+        ast.mainBlock = rawMain;
       } else if (t.type === "IDENT" && peek(1).type === "=") {
         const paramName = next().value;
         next(); // '='
@@ -630,12 +659,192 @@
       }
     }
 
+    // Reattach @mry-koon children or synthesize children for pure dictionary koon statements
+    if (ast.modelType === "RBD") {
+      for (const g of ast.groups || []) {
+        if (g.kind === "kooN") {
+          if (koonCommentChildren[g.name] && koonCommentChildren[g.name].length > 0) {
+            g.children = koonCommentChildren[g.name];
+          } else if ((!g.children || g.children.length === 0) && g.n) {
+            const nCount = Math.max(1, parseInt(g.n, 10) || 1);
+            // Match declared blocks that share (mttf, mttr) if available
+            const matching = (ast.blocks || []).filter(
+              (b) => b.kind === "block" && (!g.mttf || b.mttf === g.mttf) && (!g.mttr || b.mttr === g.mttr)
+            );
+            if (matching.length === nCount) {
+              g.children = matching.map((b) => b.name);
+            } else {
+              const synth = [];
+              for (let idx = 1; idx <= nCount; idx++) {
+                const bName = `${g.name}_B${idx}`;
+                if (!(ast.blocks || []).some((b) => b.name === bName)) {
+                  ast.blocks.push({
+                    name: bName,
+                    kind: "block",
+                    mttf: g.mttf || "1000.0",
+                    mttr: g.mttr || "1.0",
+                    extraProps: [],
+                    line: g.line
+                  });
+                }
+                synth.push(bName);
+              }
+              g.children = synth;
+            }
+          }
+        }
+      }
+    }
+
     return ast;
   }
 
   // =========================================================================
-  // 3. DETERMINISTIC MRY GENERATOR (AST -> .mry)
+  // 3. DETERMINISTIC MRY GENERATOR (AST -> .mry, Formal Mercury 6.2 Grammar)
   // =========================================================================
+  // Exact reserved words from org/modcs/tools/parser/lexical/lexico.flex (lines 110-191)
+  const MERCURY_RESERVED_WORDS = new Set([
+    "P", "E", "in", "out", "up", "top", "set", "arc", "ET",
+    "state", "event", "rate", "model", "metric", "reward", "measure",
+    "block", "series", "parallel", "koon", "hierarchy", "MTTF", "MTTR",
+    "main", "print", "println", "for", "range", "solve", "solve_rm",
+    "place", "SPN", "OPN", "SubNet", "subnet", "RBD", "DRBD", "CTMC", "DTMC", "EFM",
+    "timedTransition", "timeTransition", "immediateTransition", "substitutionTransition", "eventTransition",
+    "inputs", "outputs", "delay", "interval", "inhibitors", "weight", "priority",
+    "enablingFunction", "onFiring", "serverType", "guardExpression",
+    "if", "then", "else", "IF", "ELSE", "function", "filters", "extends",
+    "probability", "component", "SDEP", "SPARE", "SHARED",
+    "AND", "OR", "NOT", "true", "false", "tokens"
+  ]);
+
+  const MERCURY_IDENT_RE = /^[a-zA-Z][a-zA-Z0-9_]*$/;
+
+  function stripOuterBalancedParens(str) {
+    let s = String(str || "").trim();
+    while (s.startsWith("(") && s.endsWith(")")) {
+      let depth = 0;
+      let balanced = true;
+      for (let i = 0; i < s.length; i++) {
+        if (s[i] === "(") depth++;
+        else if (s[i] === ")") depth--;
+        if (depth === 0 && i < s.length - 1) {
+          balanced = false;
+          break;
+        }
+      }
+      if (balanced) s = s.slice(1, -1).trim();
+      else break;
+    }
+    return s;
+  }
+
+  function splitTopLevelLogicOps(str) {
+    const s = stripOuterBalancedParens(str);
+    const parts = [];
+    let depth = 0;
+    let lastIdx = 0;
+    let i = 0;
+    while (i < s.length) {
+      if (s[i] === "(") {
+        depth++;
+        i++;
+      } else if (s[i] === ")") {
+        depth = Math.max(0, depth - 1);
+        i++;
+      } else if (depth === 0) {
+        const rest = s.slice(i);
+        const m = rest.match(/^(?:\s+|\b)(AND|OR)(?:\s+|\b|(?=\())/);
+        if (m && (i === 0 || /[\s)]/.test(s[i - 1]) || /\b/.test(s.slice(i - 1, i + 1)))) {
+          const op = m[1];
+          const opStart = i + rest.indexOf(op);
+          const opEnd = opStart + op.length;
+          const prevCh = opStart > 0 ? s[opStart - 1] : " ";
+          const nextCh = opEnd < s.length ? s[opEnd] : " ";
+          if (/[\s)]/.test(prevCh) && /[\s(]/.test(nextCh)) {
+            parts.push({ type: "clause", text: s.slice(lastIdx, opStart).trim() });
+            parts.push({ type: "op", text: op });
+            i = opEnd;
+            lastIdx = i;
+            continue;
+          }
+        }
+        i++;
+      } else {
+        i++;
+      }
+    }
+    parts.push({ type: "clause", text: s.slice(lastIdx).trim() });
+    return parts.filter((p) => p.type === "op" || p.text.length > 0);
+  }
+
+  /**
+   * Formats a boolean condition into Mercury LogicCondition.java's exact zero-whitespace
+   * parenthesized grammar: e.g. "(#Failed>0)" or "((#InService_T1=0)AND(#Queued_T1=0))".
+   * Recall LogicCondition.java checks str.charAt(0)=='(' && str.charAt(len-1)==')' WITHOUT .trim()!
+   */
+  function normalizeMercuryLogicCondition(condStr) {
+    let s = stripOuterBalancedParens(condStr)
+      .replace(/==/g, "=")
+      .replace(/!=/g, "/=");
+    if (!s) return "";
+    if (/^NOT\s*\(/i.test(s)) {
+      const inner = s.replace(/^NOT\s*/i, "");
+      return `(NOT${normalizeMercuryLogicCondition(inner)})`;
+    }
+    const parts = splitTopLevelLogicOps(s);
+    if (parts.length <= 1) {
+      const atom = stripOuterBalancedParens(s).replace(/\s+/g, "");
+      return `(${atom})`;
+    }
+    const formatted = parts
+      .map((p) => (p.type === "op" ? p.text : normalizeMercuryLogicCondition(p.text)))
+      .join("");
+    return `(${formatted})`;
+  }
+
+  /**
+   * Formats a guard into Mercury parser.cup top-level booleanExpression format
+   * for timedTransition `guardExpression = ...` (where equality is `==` and inequality is `!=`,
+   * matching SPNModel.java:208).
+   */
+  function formatTopLevelGuardExpression(condStr) {
+    let s = stripOuterBalancedParens(condStr)
+      .replace(/\/=/g, "!=")
+      .replace(/(?<![<>!=])=(?!=)/g, "==");
+    if (!s) return "(1 == 1)";
+    if (/^NOT\s*\(/i.test(s)) {
+      const inner = s.replace(/^NOT\s*/i, "");
+      return `(NOT ${formatTopLevelGuardExpression(inner)})`;
+    }
+    const parts = splitTopLevelLogicOps(s);
+    if (parts.length <= 1) {
+      const atom = stripOuterBalancedParens(s)
+        .replace(/\s*(==|!=|>=|<=|>|<)\s*/g, " $1 ")
+        .trim();
+      return `(${atom})`;
+    }
+    const formatted = parts
+      .map((p) => (p.type === "op" ? ` ${p.text} ` : formatTopLevelGuardExpression(p.text)))
+      .join("");
+    return `(${formatted})`;
+  }
+
+  /**
+   * Canonicalizes an IF(...):(...)ELSE(...) arc multiplicity string for Mercury 6.2 CLI:
+   * 1. Converts each IF condition to canonical LogicCondition format.
+   * 2. Prepends a single leading space inside quotes (" IF...") so SPNModel.java:1807
+   *    (`str.startsWith("IF")` without .trim()) skips the broken OPN numeric sub-parser,
+   *    while IfElseExpression.java:76 (`str.trim()` at bytecode offset 1) parses it cleanly!
+   */
+  function formatMercuryIfElseArcString(multStr) {
+    const s = String(multStr || "").trim();
+    if (!/^IF\s*\(/i.test(s)) return s;
+    const canon = s.replace(/IF\s*\(([^:]+)\)\s*:\s*\(([^)]+)\)/gi, (_, cond, thenVal) => {
+      return `IF${normalizeMercuryLogicCondition(cond)}:(${String(thenVal).trim()})`;
+    });
+    return ` ${canon}`;
+  }
+
   function formatArc(arc) {
     const mult = (arc.multiplicity || "1").trim();
     if (!mult || mult === "1") {
@@ -647,7 +856,8 @@
       /#[A-Za-z_]/.test(mult) ||
       /[\s><=:]/.test(mult);
     if (needsQuotes) {
-      return `${arc.place}("${mult}")`;
+      const outMult = /^IF\s*\(/i.test(mult) ? formatMercuryIfElseArcString(mult) : mult;
+      return `${arc.place}("${outMult}")`;
     }
     return `${arc.place}(${mult})`;
   }
@@ -662,11 +872,69 @@
     return `[\n${formatted.map((s) => `${indent}    ${s}`).join(",\n")}\n${indent}]`;
   }
 
+  function collectIntegerParameterNames(ast) {
+    const paramNames = new Set((ast.parameters || []).map((p) => p.name));
+    const intParams = new Set();
+    for (const pl of ast.places || []) {
+      const tok = String(pl.tokens ?? "").trim();
+      if (paramNames.has(tok)) intParams.add(tok);
+    }
+    for (const tr of ast.transitions || []) {
+      const prio = String(tr.priority ?? "").trim();
+      if (paramNames.has(prio)) intParams.add(prio);
+      for (const a of [...(tr.inputs || []), ...(tr.outputs || []), ...(tr.inhibitors || [])]) {
+        const m = String(a.multiplicity ?? "").trim();
+        if (paramNames.has(m)) intParams.add(m);
+      }
+    }
+    return Array.from(intParams);
+  }
+
+  function spnNeedsCurrentSpnBootstrap(ast) {
+    if (!ast.places || ast.places.length === 0) return false;
+    for (const tr of ast.transitions || []) {
+      if (tr.guard && tr.guard.trim() !== "") return true;
+      for (const a of [...(tr.inputs || []), ...(tr.outputs || []), ...(tr.inhibitors || [])]) {
+        const m = String(a.multiplicity || "").trim();
+        if (/IF\s*\(/i.test(m) || /#[A-Za-z_]/.test(m)) return true;
+      }
+    }
+    return false;
+  }
+
+  /**
+   * Rewrites legacy hallucinated `solve(model = M, metrics = [m1, m2], ...)` blocks
+   * into formal Mercury 6.2 `parser.cup` `solve( M, m1 )` calls.
+   */
+  function normalizeMainBlockForMercury(rawMain, defaultModelName) {
+    if (!rawMain || !rawMain.trim()) return "";
+    let body = rawMain;
+    // Detect `varName = solve( ... metrics = [m1, m2, ...] ... );`
+    const multiSolveRe = /([A-Za-z_][A-Za-z0-9_]*)\s*=\s*solve\s*\(([\s\S]*?)\)\s*;\s*(?:println\s*\(\s*\1\s*\)\s*;)?/g;
+    body = body.replace(multiSolveRe, (fullMatch, varName, argsContent) => {
+      if (!/metrics\s*=\s*\[/.test(argsContent)) return fullMatch;
+      const modelMatch = argsContent.match(/model\s*=\s*([A-Za-z_][A-Za-z0-9_]*)/);
+      const mName = modelMatch ? modelMatch[1] : defaultModelName;
+      const listMatch = argsContent.match(/metrics\s*=\s*\[([^\]]+)\]/);
+      if (!listMatch) return fullMatch;
+      const metricIds = listMatch[1]
+        .split(",")
+        .map((s) => s.trim())
+        .filter(Boolean);
+      if (metricIds.length === 0) return fullMatch;
+      return metricIds
+        .map((mId) => `${mId}_val = solve( ${mName}, ${mId} );\n    println("${mId} = " .. ${mId}_val);`)
+        .join("\n    ");
+    });
+    return body;
+  }
+
   function generateMry(ast, options = {}) {
     if (ast.modelType === "RBD") {
       return generateRbdMry(ast, options);
     }
     const lines = [];
+    const modelName = ast.modelName || "Model";
 
     // Global parameters
     for (const p of ast.parameters || []) {
@@ -674,25 +942,50 @@
     }
     if ((ast.parameters || []).length > 0) lines.push("");
 
-    // SPN block
-    lines.push(`${ast.modelType || "SPN"} ${ast.modelName || "Model"} {`);
+    const formatPlaceLines = (targetLines) => {
+      for (const pl of ast.places || []) {
+        const tok = String(pl.tokens ?? "0").trim();
+        const props = [];
+        if (pl.hasExplicitTokens || (tok !== "" && tok !== "0")) {
+          props.push(`tokens = ${tok}`);
+        }
+        for (const ep of pl.extraProps || []) {
+          props.push(`${ep.key} = ${ep.raw}`);
+        }
+        if (props.length > 0) {
+          targetLines.push(`    place ${pl.name}( ${props.join(", ")} );`);
+        } else {
+          targetLines.push(`    place ${pl.name};`);
+        }
+      }
+    };
+
+    const synthesizedMain =
+      (!ast.mainBlock || !ast.mainBlock.trim()) && options.ensureMainBlock && (ast.metrics || []).length > 0
+        ? (ast.metrics || [])
+            .map((m) => `${m.name}_val = solve( ${modelName}, ${m.name} );\n    println("${m.name} = " .. ${m.name}_val);`)
+            .join("\n    ")
+        : "";
+    const effectiveMainRaw = (ast.mainBlock && ast.mainBlock.trim() !== "") ? ast.mainBlock : synthesizedMain;
+    const hasMain = Boolean(effectiveMainRaw && effectiveMainRaw.trim() !== "");
+    const needsBoot = hasMain && spnNeedsCurrentSpnBootstrap(ast);
+
+    // Emit headless Mercury 6.2 CLI currentSPN static singleton bootstrap SPN when needed
+    if (needsBoot) {
+      const firstPlace = ast.places[0].name;
+      lines.push(`SPN ${modelName}_Init {`);
+      formatPlaceLines(lines);
+      lines.push(`    timedTransition _init_tr( inputs = [${firstPlace}], outputs = [${firstPlace}], delay = 1.0 );`);
+      lines.push(`    metric _init_m = stationaryAnalysis( expression = "P{#${firstPlace}>=0}" );`);
+      lines.push(`}`);
+      lines.push("");
+    }
+
+    // Main SPN block
+    lines.push(`${ast.modelType || "SPN"} ${modelName} {`);
 
     // Places
-    for (const pl of ast.places || []) {
-      const tok = String(pl.tokens ?? "0").trim();
-      const props = [];
-      if (pl.hasExplicitTokens || (tok !== "" && tok !== "0")) {
-        props.push(`tokens = ${tok}`);
-      }
-      for (const ep of pl.extraProps || []) {
-        props.push(`${ep.key} = ${ep.raw}`);
-      }
-      if (props.length > 0) {
-        lines.push(`    place ${pl.name}( ${props.join(", ")} );`);
-      } else {
-        lines.push(`    place ${pl.name};`);
-      }
-    }
+    formatPlaceLines(lines);
 
     if ((ast.places || []).length > 0 && (ast.transitions || []).length > 0) {
       lines.push("");
@@ -729,8 +1022,13 @@
       }
 
       if (tr.guard && tr.guard.trim() !== "") {
-        const gKey = tr.guardKey || "enablingFunction";
-        props.push(`${gKey} = "${tr.guard.trim()}"`);
+        if (tr.kind === "timed") {
+          // Script.java:1703 requires unquoted guardExpression on timedTransition!
+          props.push(`guardExpression = ${formatTopLevelGuardExpression(tr.guard)}`);
+        } else {
+          // Script.java:1695 accepts quoted enablingFunction on immediateTransition
+          props.push(`enablingFunction = "${normalizeMercuryLogicCondition(tr.guard)}"`);
+        }
       }
       if (tr.priority !== undefined && String(tr.priority).trim() !== "") {
         props.push(`priority = ${String(tr.priority).trim()}`);
@@ -743,6 +1041,11 @@
       }
       for (const ep of tr.extraProps || []) {
         props.push(`${ep.key} = ${ep.raw}`);
+      }
+
+      // parser.cup requires non-empty spn_transition_parameter_list
+      if (props.length === 0) {
+        props.push(tr.kind === "immediate" ? "weight = 1.0" : "delay = 1.0");
       }
 
       lines.push(`    ${kw} ${tr.name}(`);
@@ -767,9 +1070,22 @@
     lines.push("}");
 
     // Main block
-    if (ast.mainBlock && ast.mainBlock.trim() !== "") {
+    if (hasMain) {
+      const normalizedMain = normalizeMainBlockForMercury(effectiveMainRaw, modelName).trim();
+      const intParams = collectIntegerParameterNames(ast);
+      const headerStmts = [];
+      if (intParams.length > 0) {
+        headerStmts.push(`    setIntegerParameters(${intParams.map((p) => `"${p}"`).join(", ")});`);
+      }
+      if (needsBoot) {
+        headerStmts.push(`    _init = solve(${modelName}_Init, _init_m);`);
+      }
       lines.push("");
-      lines.push(`main {${ast.mainBlock}}`);
+      if (headerStmts.length > 0) {
+        lines.push(`main {\n${headerStmts.join("\n")}\n    ${normalizedMain}\n}`);
+      } else {
+        lines.push(`main {\n    ${normalizedMain}\n}`);
+      }
     }
 
     // Optional layout & zones comment (disabled by default for clean Mercury CLI export)
@@ -788,6 +1104,8 @@
 
   function generateRbdMry(ast, options = {}) {
     const lines = [];
+    const blockByName = {};
+    for (const b of ast.blocks || []) blockByName[b.name] = b;
 
     for (const p of ast.parameters || []) {
       lines.push(`${p.name} = ${p.value};`);
@@ -825,12 +1143,32 @@
       lines.push("");
     }
 
-    // Series / Parallel / kooN groups
+    // Series / Parallel / koon groups (lexico.flex line 131 & RBDKOutOfNBlock.java formal grammar)
+    const koonComments = [];
     for (const g of ast.groups || []) {
-      const childrenStr = (g.children || []).join(", ");
+      const children = g.children || [];
+      const childrenStr = children.join(", ");
       if (g.kind === "kooN") {
         const kVal = String(g.k || "1").trim();
-        lines.push(`    kooN ${g.name}( k = ${kVal}${childrenStr ? ", " + childrenStr : ""} );`);
+        const nVal = String(g.n || (children.length > 0 ? children.length : "1")).trim();
+        let mttfExpr = g.mttf ? String(g.mttf).trim() : "";
+        let mttrExpr = g.mttr ? String(g.mttr).trim() : "";
+        if (!mttfExpr || !mttrExpr) {
+          for (const chName of children) {
+            const cb = blockByName[chName];
+            if (cb && cb.kind === "block" && cb.mttf && cb.mttr) {
+              if (!mttfExpr) mttfExpr = String(cb.mttf).trim();
+              if (!mttrExpr) mttrExpr = String(cb.mttr).trim();
+              break;
+            }
+          }
+        }
+        if (!mttfExpr) mttfExpr = (ast.blocks && ast.blocks[0] && ast.blocks[0].mttf) || "1000.0";
+        if (!mttrExpr) mttrExpr = (ast.blocks && ast.blocks[0] && ast.blocks[0].mttr) || "1.0";
+        lines.push(`    koon ${g.name}( k = ${kVal}, n = ${nVal}, mttf = ${mttfExpr}, mttr = ${mttrExpr} );`);
+        if (children.length > 0) {
+          koonComments.push(`/* @mry-koon ${g.name}: ${childrenStr} */`);
+        }
       } else {
         lines.push(`    ${g.kind} ${g.name}( ${childrenStr} );`);
       }
@@ -854,9 +1192,21 @@
 
     lines.push("}");
 
-    if (ast.mainBlock && ast.mainBlock.trim() !== "") {
+    for (const kc of koonComments) {
+      lines.push(kc);
+    }
+
+    const rbdModelName = ast.modelName || "RBDModel";
+    const rbdSynthMain =
+      (!ast.mainBlock || !ast.mainBlock.trim()) && options.ensureMainBlock && (ast.metrics || []).length > 0
+        ? (ast.metrics || [])
+            .map((m) => `${m.name}_val = solve( ${rbdModelName}, ${m.name} );\n    println("${m.name} = " .. ${m.name}_val);`)
+            .join("\n    ")
+        : "";
+    const effectiveRbdMain = (ast.mainBlock && ast.mainBlock.trim() !== "") ? ast.mainBlock.trim() : rbdSynthMain;
+    if (effectiveRbdMain) {
       lines.push("");
-      lines.push(`main {${ast.mainBlock}}`);
+      lines.push(`main {\n    ${effectiveRbdMain}\n}`);
     }
 
     return lines.join("\n") + "\n";
@@ -1092,8 +1442,48 @@
       checkArcs(tr.inhibitors, "inh");
     }
 
-    // Structural warnings: isolated places
+    // Structural warnings: isolated places and formal Mercury 6.2 identifier rules
+    const checkMercuryIdentifier = (id, kindLabel, nodeId) => {
+      if (MERCURY_RESERVED_WORDS.has(id)) {
+        warnings.push({
+          severity: "error",
+          nodeId,
+          message: `${kindLabel} '${id}' usa uma palavra reservada da gramática JFlex do Mercury 6.2 (lexico.flex). Renomeie para evitar erro de sintaxe no CLI.`
+        });
+      } else if (!MERCURY_IDENT_RE.test(id)) {
+        warnings.push({
+          severity: "error",
+          nodeId,
+          message: `${kindLabel} '${id}' viola a regra léxica do Mercury (deve iniciar por letra ASCII e conter apenas letras, dígitos ou '_').`
+        });
+      }
+    };
+
+    for (const p of ast.parameters || []) checkMercuryIdentifier(p.name, "Parâmetro", null);
+    for (const m of ast.metrics || []) {
+      checkMercuryIdentifier(m.name, "Métrica", null);
+      if (stats.detTransitions > 0 && /^stationaryAnalysis|transientAnalysis$/i.test(m.evalType || "")) {
+        warnings.push({
+          severity: "warn",
+          nodeId: null,
+          message: `Métrica '${m.name}' usa '${m.evalType}' em um modelo com transição Determinística. No Mercury 6.2 CLI (SPNServices.java), cadeias não-markovianas exigem 'stationarySimulation' ou 'transientSimulation'.`
+        });
+      }
+    }
+    for (const tr of ast.transitions || []) {
+      checkMercuryIdentifier(tr.name, "Transição", `T:${tr.name}`);
+      const arcCount = (tr.inputs?.length || 0) + (tr.outputs?.length || 0) + (tr.inhibitors?.length || 0);
+      if (arcCount === 0) {
+        warnings.push({
+          severity: "warn",
+          nodeId: `T:${tr.name}`,
+          message: `Transição '${tr.name}' não possui nenhum arco conectado.`
+        });
+      }
+    }
+
     for (const p of ast.places || []) {
+      checkMercuryIdentifier(p.name, "Lugar", `P:${p.name}`);
       const ind = placeInDegree[p.name] || 0;
       const outd = placeOutDegree[p.name] || 0;
       if (ind === 0 && outd === 0) {
@@ -3087,6 +3477,26 @@
     const hiddenItems = [];
     const warnings = [];
 
+    const checkRbdMercuryIdentifier = (id, kindLabel, nodeId) => {
+      if (MERCURY_RESERVED_WORDS.has(id)) {
+        warnings.push({
+          severity: "error",
+          nodeId,
+          message: `${kindLabel} '${id}' usa uma palavra reservada da gramática JFlex do Mercury 6.2 (lexico.flex). Renomeie para evitar erro de sintaxe no CLI.`
+        });
+      } else if (!MERCURY_IDENT_RE.test(id)) {
+        warnings.push({
+          severity: "error",
+          nodeId,
+          message: `${kindLabel} '${id}' viola a regra léxica do Mercury (deve iniciar por letra ASCII e conter apenas letras, dígitos ou '_').`
+        });
+      }
+    };
+    for (const p of ast.parameters || []) checkRbdMercuryIdentifier(p.name, "Parâmetro", null);
+    for (const m of ast.metrics || []) checkRbdMercuryIdentifier(m.name, "Métrica", null);
+    for (const b of ast.blocks || []) checkRbdMercuryIdentifier(b.name, "Bloco RBD", `B:${b.name}`);
+    for (const g of ast.groups || []) checkRbdMercuryIdentifier(g.name, "Grupo RBD", `G:${g.name}`);
+
     for (const b of ast.blocks || []) {
       const m = rbdEval.blockMetrics[b.name];
       const spofTag = rbdEval.spofs.includes(b.name) ? " [SPOF]" : "";
@@ -3138,7 +3548,7 @@
           warnings.push({
             severity: "info",
             nodeId: `G:${g.name}`,
-            message: `Nota de compatibilidade Mercury 6.2 CLI: 'kooN' (${kv}-de-${g.children.length}) é avaliado analiticamente aqui com exatidão; no script do Mercury 6.2, k=1 usa 'parallel' e k=N usa 'series' (para 1<k<N use Mercury GUI/7.0 ou expansão SPN/CTMC).`
+            message: `Compatibilidade Mercury 6.2 CLI: 'koon' (${kv}-de-${g.children.length}) é exportado na sintaxe formal 'koon ${g.name}( k = ${kv}, n = ${g.children.length}, mttf = ..., mttr = ... );' (RBDKOutOfNBlock.java).`
           });
         }
       }
