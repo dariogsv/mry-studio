@@ -1,4 +1,4 @@
-const CACHE_NAME = "mry-studio-v1";
+const CACHE_NAME = "mry-studio-v3";
 const ASSETS = [
   "./",
   "./index.html",

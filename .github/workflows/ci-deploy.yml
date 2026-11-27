@@ -40,6 +40,22 @@ jobs:
       - name: Run deterministic SPN/RBD/Token Game test suite
         run: node test_roundtrip.js
 
+      - name: Assemble static site bundle
+        if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+        run: |
+          mkdir -p _site
+          cp index.html styles.css mry-core.js presets.js app.js manifest.webmanifest sw.js _site/
+
+      - name: Setup Pages
+        if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+        uses: actions/configure-pages@v5
+
+      - name: Upload Pages artifact
+        if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: "_site"
+
   deploy:
     name: Deploy to GitHub Pages
     needs: test
@@ -49,22 +65,6 @@ jobs:
       url: ${{ steps.deployment.outputs.page_url }}
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Assemble static site bundle
-        run: |
-          mkdir -p _site
-          cp index.html styles.css mry-core.js presets.js app.js manifest.webmanifest sw.js _site/
-
-      - name: Setup Pages
-        uses: actions/configure-pages@v5
-
-      - name: Upload Pages artifact
-        uses: actions/upload-pages-artifact@v3
-        with:
-          path: "_site"
-
       - name: Deploy to GitHub Pages
         id: deployment
         uses: actions/deploy-pages@v4

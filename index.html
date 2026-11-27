@@ -6,7 +6,7 @@
   <title>MRY Studio — SPN &amp; RBD Visual Modeling</title>
   <link rel="manifest" href="manifest.webmanifest" />
   <meta name="theme-color" content="#09090b" />
-  <link rel="stylesheet" href="styles.css" />
+  <link rel="stylesheet" href="styles.css?v=3" />
 </head>
 <body>
   <header class="topbar" role="banner">
@@ -383,13 +383,15 @@
   <div id="svgTooltip" role="tooltip"></div>
   <div id="toastHost" class="toast-host" aria-live="polite"></div>
 
-  <script src="mry-core.js"></script>
-  <script src="presets.js"></script>
-  <script src="app.js"></script>
+  <script src="mry-core.js?v=3"></script>
+  <script src="presets.js?v=3"></script>
+  <script src="app.js?v=3"></script>
   <script>
     if ("serviceWorker" in navigator && location.protocol.startsWith("http")) {
       window.addEventListener("load", () => {
-        navigator.serviceWorker.register("./sw.js").catch(() => {});
+        navigator.serviceWorker.register("./sw.js?v=3").then((reg) => {
+          reg.update().catch(() => {});
+        }).catch(() => {});
       });
     }
   </script>
