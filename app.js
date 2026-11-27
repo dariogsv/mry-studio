@@ -50,10 +50,15 @@
     simRespectImm: true,
     simLastReason: "",
     lastMirrors: [],
+    lastRenderedArcs: [],
+    isEmptyEditor: false,
+    layoutMode: "zen",   // "zen" (Code + Canvas) | "canvas" (100% Figma Canvas) | "studio" (Code + Canvas + Inspector)
     view: { x: -30, y: -30, w: 1700, h: 1050 },
     isPanning: false,
     panStart: null,
     draggingNode: null,  // { nodeId, origX, origY, offsetX, offsetY, moved }
+    draggingMirror: null,
+    draggingWaypoint: null, // { wpKey, arcId, idx, origX, origY, moved }
     draggingMulti: null, // { ids, startClientX, startClientY, startSvg, origPos, dragActivated, moved, wasCloned }
     draggingZone: null,  // { zoneId, startSvg, origMemberPos, origEmptyPos, moved }
     axisGuide: null,     // { type: "H", y } | { type: "V", x } (when holding Shift)
@@ -65,7 +70,20 @@
     editorDebounceTimer: null,
     autosaveTimer: null,
     manifestSearch: "",
-    manifestCategory: "ALL"
+    manifestCategory: "ALL",
+    collab: {
+      active: false,
+      roomId: "",
+      selfId: "u_" + Math.random().toString(36).slice(2, 9),
+      userName: "Pesquisador " + Math.floor(10 + Math.random() * 89),
+      userColor: ["#3b82f6", "#10b981", "#8b5cf6", "#f59e0b", "#ec4899", "#06b6d4"][Math.floor(Math.random() * 6)],
+      bc: null,
+      peer: null,
+      conns: new Map(),
+      remotePeers: new Map(), // peerId -> { name, color, x, y, ts }
+      suppressBroadcast: false,
+      lastCursorSent: 0
+    }
   };
 
   // DOM refs
@@ -73,6 +91,27 @@
     presetSelect: document.getElementById("presetSelect"),
     fileInput: document.getElementById("fileInput"),
     btnOpenFile: document.getElementById("btnOpenFile"),
+    btnCloseFile: document.getElementById("btnCloseFile"),
+    activeFileTab: document.getElementById("activeFileTab"),
+    layoutModeSeg: document.getElementById("layoutModeSeg"),
+    btnQuickMirrors: document.getElementById("btnQuickMirrors"),
+    btnViewMenu: document.getElementById("btnViewMenu"),
+    viewMenu: document.getElementById("viewMenu"),
+    btnCollabMenu: document.getElementById("btnCollabMenu"),
+    collabMenu: document.getElementById("collabMenu"),
+    collabDot: document.getElementById("collabDot"),
+    collabBtnLabel: document.getElementById("collabBtnLabel"),
+    inpCollabName: document.getElementById("inpCollabName"),
+    inpCollabRoom: document.getElementById("inpCollabRoom"),
+    btnCollabToggle: document.getElementById("btnCollabToggle"),
+    collabStatusRow: document.getElementById("collabStatusRow"),
+    collabStatusText: document.getElementById("collabStatusText"),
+    btnCollabCopyLink: document.getElementById("btnCollabCopyLink"),
+    emptyEditorState: document.getElementById("emptyEditorState"),
+    btnEmptyOpenCenter: document.getElementById("btnEmptyOpenCenter"),
+    btnEmptyNewSpn: document.getElementById("btnEmptyNewSpn"),
+    btnEmptyNewRbd: document.getElementById("btnEmptyNewRbd"),
+    emptyRecentList: document.getElementById("emptyRecentList"),
     btnExportMenu: document.getElementById("btnExportMenu"),
     exportMenu: document.getElementById("exportMenu"),
     resetMenuSep: document.getElementById("resetMenuSep"),
@@ -493,6 +532,7 @@
       state.lastCommittedSnap = cur;
       updateHistoryButtons();
       scheduleAutosave();
+      broadcastCollabState();
     }
   }
 
@@ -650,6 +690,7 @@
   }
 
   function openWorkspaceEntry(fileKey, fileLabel, fallbackCode, useSavedMemory = true) {
+    if (state.isEmptyEditor) exitEmptyEditorState();
     state.fileKey = fileKey;
     state.fileLabel = fileLabel;
     state.selected = null;
@@ -673,6 +714,10 @@
       } else {
         state.useMirrors = false;
         if (dom.chkMirrors) dom.chkMirrors.checked = false;
+      }
+      if (dom.btnQuickMirrors) {
+        dom.btnQuickMirrors.classList.toggle("active", state.useMirrors);
+        dom.btnQuickMirrors.setAttribute("aria-pressed", String(state.useMirrors));
       }
       if (mem.arcLabelMode) {
         state.arcLabelMode = mem.arcLabelMode;
@@ -817,6 +862,7 @@
       renderCanvas();
       renderRightPanel();
       setParseStatus(true, `Disparou '${trName}' (${res.deltas.join(", ") || "sem alteração"})`);
+      broadcastCollabState();
     }
     return true;
   }
@@ -970,11 +1016,15 @@
           for (const [k, v] of Object.entries(autoPos)) {
             nextPos[k] = state.positions[k] || (ast.layout && ast.layout[k]) || v;
           }
-          // Preserve custom user-dragged mirror coordinates (M:tr:pl and MT:pl:tr)
+          // Preserve custom user-dragged mirror coordinates (M:tr:pl and MT:pl:tr) AND fixed connector inflection points (W:arcId)
           for (const srcMap of [ast.layout || {}, state.positions || {}]) {
             for (const [k, v] of Object.entries(srcMap)) {
               if ((k.startsWith("M:") || k.startsWith("MT:")) && v && Number.isFinite(v.x) && Number.isFinite(v.y)) {
                 nextPos[k] = { x: v.x, y: v.y };
+              } else if (k.startsWith("W:") && Array.isArray(v) && v.length > 0) {
+                nextPos[k] = v
+                  .filter((p) => p && Number.isFinite(p.x) && Number.isFinite(p.y))
+                  .map((p) => ({ x: p.x, y: p.y }));
               }
             }
           }
@@ -1179,6 +1229,7 @@
     const allArcs = [...spnGraph.arcs, ...(spnGraph.placeInputArcs || [])];
     const mirrors = spnGraph.mirrors || [];
     state.lastMirrors = mirrors;
+    state.lastRenderedArcs = allArcs;
 
     const simActive = !forExport && state.simMode && Boolean(state.simMarking);
     const simEnabled = simActive
@@ -1433,14 +1484,57 @@
       }
 
       const tipTitle = isInh
-        ? `Inibidor: ${item.place} ○→ ${item.trName} (mult=${mult})`
-        : `${item.srcId.slice(2)} → ${item.dstId.slice(2)} | peso: ${mult}`;
+        ? `Inibidor: ${item.place} ○→ ${item.trName} (mult=${mult}) | Duplo-clique: criar ponto de inflexão fixo`
+        : `${item.srcId.slice(2)} → ${item.dstId.slice(2)} | peso: ${mult} | Duplo-clique: criar ponto de inflexão fixo`;
+
+      // Fixed inflection points (bend handles) & segment midpoint '+' handles
+      let waypointsSvg = "";
+      const wpKey = `W:${item.id}`;
+      const customWps = Array.isArray(state.positions[wpKey]) ? state.positions[wpKey] : [];
+      if (!forExport && !simActive) {
+        if (isSelected) {
+          // Segment midpoint '+' handles to create a new fixed inflection point by clicking or dragging!
+          const pts = item.finalPts || [item.startPt, item.endPt];
+          for (let s = 0; s < pts.length - 1; s++) {
+            const pA = pts[s];
+            const pB = pts[s + 1];
+            if (!pA || !pB || Math.hypot(pB.x - pA.x, pB.y - pA.y) < 34) continue;
+            const mx = (pA.x + pB.x) / 2;
+            const my = (pA.y + pB.y) / 2;
+            waypointsSvg += `
+              <g class="spn-arc-wp-add" data-arc-id="${escapeXml(item.id)}" data-seg-idx="${s}" data-mx="${mx.toFixed(1)}" data-my="${my.toFixed(1)}" data-tip="Clique ou arraste para criar um ponto de inflexão fixo neste trecho" style="cursor:copy">
+                <circle cx="${mx.toFixed(1)}" cy="${my.toFixed(1)}" r="6" fill="#09090b" stroke="${colorSel}" stroke-width="1.4" />
+                <path d="M ${(mx - 2.6).toFixed(1)} ${my.toFixed(1)} H ${(mx + 2.6).toFixed(1)} M ${mx.toFixed(1)} ${(my - 2.6).toFixed(1)} V ${(my + 2.6).toFixed(1)}" stroke="#60a5fa" stroke-width="1.4" stroke-linecap="round" />
+              </g>
+            `;
+          }
+          // Existing user-fixed inflection point handles (draggable, double-click/right-click to remove)
+          customWps.forEach((wp, wIdx) => {
+            waypointsSvg += `
+              <g class="spn-arc-wp" data-arc-id="${escapeXml(item.id)}" data-wp-idx="${wIdx}" data-wx="${wp.x}" data-wy="${wp.y}" data-tip="Ponto de inflexão fixo #${wIdx + 1} (${wp.x}, ${wp.y}) | Arraste para mover (Shift alinha 90°) • Duplo-clique ou botão direito para remover" style="cursor:move">
+                <circle cx="${wp.x.toFixed(1)}" cy="${wp.y.toFixed(1)}" r="6.5" fill="#ffffff" stroke="${colorSel}" stroke-width="2.2" />
+                <circle cx="${wp.x.toFixed(1)}" cy="${wp.y.toFixed(1)}" r="2.4" fill="${colorSel}" />
+              </g>
+            `;
+          });
+        } else if (customWps.length > 0) {
+          // Subtle pin indicator on unselected arcs that have fixed inflection points
+          customWps.forEach((wp, wIdx) => {
+            waypointsSvg += `
+              <g class="spn-arc-wp" data-arc-id="${escapeXml(item.id)}" data-wp-idx="${wIdx}" data-wx="${wp.x}" data-wy="${wp.y}" data-tip="Ponto de inflexão fixo #${wIdx + 1} | Arraste para ajustar • Duplo-clique para remover" style="cursor:move">
+                <circle cx="${wp.x.toFixed(1)}" cy="${wp.y.toFixed(1)}" r="4" fill="#ffffff" stroke="${stroke}" stroke-width="1.6" />
+              </g>
+            `;
+          });
+        }
+      }
 
       arcsSvg += `
         <g class="spn-arc" data-arc-id="${escapeXml(item.id)}" data-tip="${escapeXml(tipTitle)}" opacity="${opacity}">
-          <path d="${pathD}" fill="none" stroke="transparent" stroke-width="12" style="cursor:pointer" />
+          <path d="${pathD}" fill="none" stroke="transparent" stroke-width="13" style="cursor:pointer" />
           <path d="${pathD}" fill="none" stroke="${stroke}" stroke-width="${sw}" ${dash} marker-end="${markerEnd}" style="cursor:pointer" />
           ${labelSvg}
+          ${waypointsSvg}
         </g>
       `;
     }
@@ -1581,7 +1675,7 @@
       let simHaloSvg = "";
       if (isFireable) {
         simHaloSvg = `
-          <rect x="${(pt.x - dim.w / 2 - 7).toFixed(1)}" y="${(pt.y - dim.h / 2 - 7).toFixed(1)}" width="${dim.w + 14}" height="${dim.h + 14}" rx="6" fill="rgba(16, 185, 129, 0.22)" stroke="#10b981" stroke-width="1.8" />
+          <rect class="mercury-blink-halo" x="${(pt.x - dim.w / 2 - 7).toFixed(1)}" y="${(pt.y - dim.h / 2 - 7).toFixed(1)}" width="${dim.w + 14}" height="${dim.h + 14}" rx="6" fill="rgba(16, 185, 129, 0.25)" stroke="#10b981" stroke-width="2" />
           <circle cx="${(pt.x + dim.w / 2 + 7).toFixed(1)}" cy="${(pt.y - dim.h / 2 - 3).toFixed(1)}" r="8" fill="#10b981" stroke="#ffffff" stroke-width="1.2" />
           <text x="${(pt.x + dim.w / 2 + 7.5).toFixed(1)}" y="${(pt.y - dim.h / 2 + 0.5).toFixed(1)}" text-anchor="middle" font-family="${fontFamily}" font-size="8.5" font-weight="800" fill="#ffffff">▶</text>
         `;
@@ -1647,9 +1741,9 @@
       if (tr.weight !== "") tipParts.push(`weight = ${tr.weight}`);
 
       nodesSvg += `
-        <g class="spn-node" data-node-kind="T" data-node-name="${escapeXml(tr.name)}" data-tip="${escapeXml(tipParts.join(" | "))}" opacity="${opacity}" style="cursor:${isFireable ? "pointer" : simActive ? "help" : "pointer"}">
+        <g class="spn-node${isFireable ? " mercury-blink" : ""}" data-node-kind="T" data-node-name="${escapeXml(tr.name)}" data-tip="${escapeXml(tipParts.join(" | "))}" opacity="${opacity}" style="cursor:${isFireable ? "pointer" : simActive ? "help" : "pointer"}">
           ${simHaloSvg}
-          <rect x="${(pt.x - dim.w / 2).toFixed(1)}" y="${(pt.y - dim.h / 2).toFixed(1)}" width="${dim.w}" height="${dim.h}" rx="${isImm ? 1 : 2}" fill="${fill}" stroke="${stroke}" stroke-width="${sw}" />
+          <rect class="${isFireable ? "mercury-blink-bar" : ""}" x="${(pt.x - dim.w / 2).toFixed(1)}" y="${(pt.y - dim.h / 2).toFixed(1)}" width="${dim.w}" height="${dim.h}" rx="${isImm ? 1 : 2}" fill="${fill}" stroke="${stroke}" stroke-width="${sw}" />
           ${metaSvg}
           <text x="${pt.x}" y="${pt.y + dim.h / 2 + 14}" text-anchor="middle" font-family="${fontFamily}" font-size="10.5" font-weight="700" fill="#0f172a">${escapeXml(tr.name)}</text>
         </g>
@@ -1665,7 +1759,7 @@
       }
     }
 
-    return `${defs}<g id="sceneRoot">${bandsSvg}${guideSvg}${arcsSvg}${mirrorsSvg}${nodesSvg}</g><g id="codeSyncLayer" pointer-events="none"></g><g id="rubberBandLayer" pointer-events="none"></g><g id="marqueeLayer" pointer-events="none"></g>`;
+    return `${defs}<g id="sceneRoot">${bandsSvg}${guideSvg}${arcsSvg}${mirrorsSvg}${nodesSvg}</g><g id="codeSyncLayer" pointer-events="none"></g><g id="rubberBandLayer" pointer-events="none"></g><g id="marqueeLayer" pointer-events="none"></g><g id="collabLayer" pointer-events="none"></g>`;
   }
 
   function buildRbdSvgContent(forExport = false) {
@@ -1806,7 +1900,7 @@
       `;
     }
 
-    return `<g id="sceneRoot">${groupsSvg}${wiresSvg}${terminalsSvg}${boxesSvg}</g><g id="codeSyncLayer" pointer-events="none"></g>`;
+    return `<g id="sceneRoot">${groupsSvg}${wiresSvg}${terminalsSvg}${boxesSvg}</g><g id="codeSyncLayer" pointer-events="none"></g><g id="collabLayer" pointer-events="none"></g>`;
   }
 
   function renderCanvas() {
@@ -1816,6 +1910,7 @@
     renderCodeSyncOverlay();
     renderRubberBand();
     renderMarquee();
+    renderCollabCursors();
     updateSelectionActionBar();
 
     // Update collapsible overlay: RBD live metrics banner OR SPN conditional weights legend
@@ -2249,7 +2344,7 @@
       });
     });
 
-    // Arcs
+    // Arcs & Fixed Inflection Points (Waypoints)
     dom.svg.querySelectorAll(".spn-arc").forEach((el) => {
       const arcId = el.dataset.arcId;
       el.addEventListener("mouseenter", (e) => showTooltip(el.dataset.tip, e));
@@ -2257,6 +2352,7 @@
       el.addEventListener("mouseleave", hideTooltip);
 
       el.addEventListener("mousedown", (e) => {
+        if (e.target.closest(".spn-arc-wp, .spn-arc-wp-add")) return;
         e.stopPropagation();
         const baseArcId = arcId.replace(/:pmir$/, "");
         const [trName, arcDir, idxStr] = baseArcId.split(":");
@@ -2270,6 +2366,98 @@
         updateTabButtons();
         renderCanvas();
         renderCodeHighlight(true);
+        renderRightPanel();
+      });
+
+      // Double-click anywhere on an arc to insert a fixed inflection point at that exact spot!
+      el.addEventListener("dblclick", (e) => {
+        if (e.target.closest(".spn-arc-wp")) return;
+        e.stopPropagation();
+        e.preventDefault();
+        const pt = clientToSvg(e.clientX, e.clientY);
+        insertArcWaypointAt(arcId, pt.x, pt.y);
+      });
+    });
+
+    // Existing Fixed Inflection Point Handles (drag to move, double-click or right-click to remove)
+    dom.svg.querySelectorAll(".spn-arc-wp").forEach((el) => {
+      const arcId = el.dataset.arcId;
+      const wpIdx = Number(el.dataset.wpIdx);
+      const wpKey = `W:${arcId}`;
+
+      el.addEventListener("mouseenter", (e) => showTooltip(el.dataset.tip, e));
+      el.addEventListener("mousemove", (e) => moveTooltip(e));
+      el.addEventListener("mouseleave", hideTooltip);
+
+      el.addEventListener("mousedown", (e) => {
+        e.stopPropagation();
+        if (e.button === 2 || e.altKey || state.activeTool === "delete") {
+          e.preventDefault();
+          removeArcWaypoint(arcId, wpIdx);
+          return;
+        }
+        if (e.button !== 0) return;
+        const baseArcId = arcId.replace(/:pmir$/, "");
+        const [trName, arcDir, idxStr] = baseArcId.split(":");
+        state.selected = { type: "arc", id: baseArcId, trName, arcDir, arcIdx: Number(idxStr) };
+        const wps = Array.isArray(state.positions[wpKey]) ? state.positions[wpKey] : [];
+        const cur = wps[wpIdx] || { x: Number(el.dataset.wx) || 0, y: Number(el.dataset.wy) || 0 };
+        state.draggingWaypoint = {
+          wpKey,
+          arcId,
+          idx: wpIdx,
+          origX: cur.x,
+          origY: cur.y,
+          moved: false
+        };
+      });
+
+      el.addEventListener("dblclick", (e) => {
+        e.stopPropagation();
+        e.preventDefault();
+        removeArcWaypoint(arcId, wpIdx);
+      });
+
+      el.addEventListener("contextmenu", (e) => {
+        e.stopPropagation();
+        e.preventDefault();
+        removeArcWaypoint(arcId, wpIdx);
+      });
+    });
+
+    // Virtual Segment Midpoint '+' Handles (click or drag to materialize a new fixed inflection point!)
+    dom.svg.querySelectorAll(".spn-arc-wp-add").forEach((el) => {
+      const arcId = el.dataset.arcId;
+      const segIdx = Number(el.dataset.segIdx);
+      const mx = Math.round((Number(el.dataset.mx) || 0) / 5) * 5;
+      const my = Math.round((Number(el.dataset.my) || 0) / 5) * 5;
+      const wpKey = `W:${arcId}`;
+
+      el.addEventListener("mouseenter", (e) => showTooltip(el.dataset.tip, e));
+      el.addEventListener("mousemove", (e) => moveTooltip(e));
+      el.addEventListener("mouseleave", hideTooltip);
+
+      el.addEventListener("mousedown", (e) => {
+        if (e.button !== 0) return;
+        e.stopPropagation();
+        const rendered = (state.lastRenderedArcs || []).find((a) => a.id === arcId);
+        let wps = Array.isArray(state.positions[wpKey])
+          ? state.positions[wpKey].map((p) => ({ x: p.x, y: p.y }))
+          : rendered && rendered.finalPts && rendered.finalPts.length > 2
+          ? rendered.finalPts.slice(1, -1).map((p) => ({ x: Math.round(p.x / 5) * 5, y: Math.round(p.y / 5) * 5 }))
+          : [];
+        const insertIdx = Math.max(0, Math.min(wps.length, segIdx));
+        wps.splice(insertIdx, 0, { x: mx, y: my });
+        state.positions[wpKey] = wps;
+        state.draggingWaypoint = {
+          wpKey,
+          arcId,
+          idx: insertIdx,
+          origX: mx,
+          origY: my,
+          moved: true
+        };
+        renderCanvas();
         renderRightPanel();
       });
     });
@@ -2425,6 +2613,48 @@
   });
 
   window.addEventListener("mousemove", (e) => {
+    if (state.collab.active && dom.svg) {
+      const rect = dom.svg.getBoundingClientRect();
+      if (e.clientX >= rect.left && e.clientX <= rect.right && e.clientY >= rect.top && e.clientY <= rect.bottom) {
+        broadcastCollabCursor(clientToSvg(e.clientX, e.clientY));
+      }
+    }
+
+    if (state.draggingWaypoint) {
+      const dw = state.draggingWaypoint;
+      const pt = clientToSvg(e.clientX, e.clientY);
+      let nx = Math.round(pt.x / 5) * 5;
+      let ny = Math.round(pt.y / 5) * 5;
+      const wps = Array.isArray(state.positions[dw.wpKey]) ? state.positions[dw.wpKey] : [];
+
+      if (e.shiftKey) {
+        // Snap horizontally or vertically to adjacent waypoint or endpoint for crisp 90° orthogonal bends!
+        const rendered = (state.lastRenderedArcs || []).find((a) => a.id === dw.arcId);
+        const refPt =
+          dw.idx > 0 && wps[dw.idx - 1]
+            ? wps[dw.idx - 1]
+            : rendered && rendered.startPt
+            ? rendered.startPt
+            : { x: dw.origX, y: dw.origY };
+        if (Math.abs(nx - refPt.x) < Math.abs(ny - refPt.y)) {
+          nx = Math.round(refPt.x / 5) * 5;
+          state.axisGuide = { type: "V", x: nx };
+        } else {
+          ny = Math.round(refPt.y / 5) * 5;
+          state.axisGuide = { type: "H", y: ny };
+        }
+      } else {
+        state.axisGuide = null;
+      }
+
+      if (wps[dw.idx]) {
+        wps[dw.idx] = { x: nx, y: ny };
+        dw.moved = true;
+        renderCanvas();
+      }
+      return;
+    }
+
     if (state.marquee) {
       const pt = clientToSvg(e.clientX, e.clientY);
       state.marquee.curX = pt.x;
@@ -2654,6 +2884,7 @@
       return;
     }
 
+    const didWaypointDrag = state.draggingWaypoint;
     const didMirrorDrag = state.draggingMirror;
     const didNodeDrag = state.draggingNode;
     const didMultiDrag = state.draggingMulti;
@@ -2661,6 +2892,7 @@
     const reparent = state.reparentState;
     const hadGuide = Boolean(state.axisGuide);
 
+    state.draggingWaypoint = null;
     state.draggingMirror = null;
     state.draggingNode = null;
     state.draggingMulti = null;
@@ -2668,6 +2900,16 @@
     state.axisGuide = null;
     state.reparentState = null;
     state.isPanning = false;
+
+    if (didWaypointDrag) {
+      if (hadGuide) renderCanvas();
+      if (didWaypointDrag.moved) {
+        commitHistory();
+        renderRightPanel();
+        setParseStatus(true, `Ponto de inflexão #${didWaypointDrag.idx + 1} fixado`);
+      }
+      return;
+    }
 
     if (didMirrorDrag) {
       if (!didMirrorDrag.dragActivated) {
@@ -3190,9 +3432,78 @@
     return false;
   }
 
+  function insertArcWaypointAt(arcId, svgX, svgY) {
+    const wpKey = `W:${arcId}`;
+    const rendered = (state.lastRenderedArcs || []).find((a) => a.id === arcId);
+    const pts = rendered && rendered.finalPts && rendered.finalPts.length >= 2
+      ? rendered.finalPts
+      : [{ x: svgX - 40, y: svgY }, { x: svgX + 40, y: svgY }];
+
+    // Find closest segment index s along finalPts
+    let bestSeg = 0;
+    let bestDist = Infinity;
+    for (let s = 0; s < pts.length - 1; s++) {
+      const dx = pts[s + 1].x - pts[s].x;
+      const dy = pts[s + 1].y - pts[s].y;
+      const l2 = dx * dx + dy * dy || 1;
+      const t = Math.max(0, Math.min(1, ((svgX - pts[s].x) * dx + (svgY - pts[s].y) * dy) / l2));
+      const d = Math.hypot(svgX - (pts[s].x + t * dx), svgY - (pts[s].y + t * dy));
+      if (d < bestDist) {
+        bestDist = d;
+        bestSeg = s;
+      }
+    }
+
+    let wps = Array.isArray(state.positions[wpKey])
+      ? state.positions[wpKey].map((p) => ({ x: p.x, y: p.y }))
+      : pts.length > 2
+      ? pts.slice(1, -1).map((p) => ({ x: Math.round(p.x / 5) * 5, y: Math.round(p.y / 5) * 5 }))
+      : [];
+
+    const nx = Math.round(svgX / 5) * 5;
+    const ny = Math.round(svgY / 5) * 5;
+    const insertIdx = Math.max(0, Math.min(wps.length, bestSeg));
+    wps.splice(insertIdx, 0, { x: nx, y: ny });
+    state.positions[wpKey] = wps;
+
+    const baseArcId = arcId.replace(/:pmir$/, "");
+    const [trName, arcDir, idxStr] = baseArcId.split(":");
+    state.selected = { type: "arc", id: baseArcId, trName, arcDir, arcIdx: Number(idxStr) };
+    renderCanvas();
+    renderRightPanel();
+    commitHistory();
+    setParseStatus(true, `Ponto de inflexão fixo #${insertIdx + 1} criado em (${nx}, ${ny})`);
+  }
+
+  function removeArcWaypoint(arcId, wpIdx) {
+    const wpKey = `W:${arcId}`;
+    const wps = Array.isArray(state.positions[wpKey]) ? [...state.positions[wpKey]] : [];
+    if (wpIdx >= 0 && wpIdx < wps.length) {
+      wps.splice(wpIdx, 1);
+      if (wps.length === 0) delete state.positions[wpKey];
+      else state.positions[wpKey] = wps;
+      renderCanvas();
+      renderRightPanel();
+      commitHistory();
+      setParseStatus(true, "Ponto de inflexão removido");
+    }
+  }
+
+  function clearArcWaypoints(arcId) {
+    delete state.positions[`W:${arcId}`];
+    delete state.positions[`W:${arcId}:pmir`];
+    renderCanvas();
+    renderRightPanel();
+    commitHistory();
+    setParseStatus(true, "Pontos de inflexão limpos — roteamento automático restaurado");
+  }
+
   function deleteArc(trName, arcDir, arcIdx) {
     const tr = state.ast.transitions.find((t) => t.name === trName);
     if (!tr) return;
+    const arcId = `${trName}:${arcDir}:${arcIdx}`;
+    delete state.positions[`W:${arcId}`];
+    delete state.positions[`W:${arcId}:pmir`];
     const arr = arcDir === "in" ? tr.inputs : arcDir === "out" ? tr.outputs : tr.inhibitors;
     arr.splice(arcIdx, 1);
     state.selected = null;
@@ -4102,6 +4413,9 @@
       if (!arc) return;
 
       const dirLabel = sel.arcDir === "in" ? "Entrada (Lugar → Transição)" : sel.arcDir === "out" ? "Saída (Transição → Lugar)" : "Inibidor (Lugar ○→ Transição)";
+      const wpKey = `W:${sel.id}`;
+      const customWps = Array.isArray(state.positions[wpKey]) ? state.positions[wpKey] : [];
+
       dom.tabBody.innerHTML = `
         <div class="section-card">
           <div class="section-title">
@@ -4129,11 +4443,37 @@
           <div class="field">
             <label>Multiplicidade / Expressão Condicional</label>
             <textarea id="inpArcMult" rows="3" style="font-family:var(--font-mono)">${escapeXml(arc.multiplicity || "1")}</textarea>
-            <div style="font-size:10.5px;color:#94a3b8;margin-top:4px;">
+            <div style="font-size:10.5px;color:#a1a1aa;margin-top:4px;">
               Exemplos: <code>1</code>, <code>2</code>, <code>#InService_T1</code>, <code>IF(#InService_T1>0):(1)ELSE(0)</code>
             </div>
           </div>
           <button class="btn sm" id="btnGoTransition">Abrir Transição '${escapeXml(tr.name)}'</button>
+        </div>
+
+        <div class="section-card">
+          <div class="section-title">
+            <span>Pontos de Inflexão Fixos (${customWps.length})</span>
+            <div style="display:flex;gap:4px;">
+              <button class="btn sm" id="btnAddMidWaypoint" title="Criar ponto de inflexão fixo no meio deste conector">+ Ponto</button>
+              ${customWps.length > 0 ? `<button class="btn sm danger" id="btnClearWaypoints" title="Remover todas as inflexões fixas">↺ Limpar</button>` : ""}
+            </div>
+          </div>
+          <div style="font-size:10.5px;color:#a1a1aa;margin-bottom:6px;">
+            Dê <strong>duplo-clique</strong> em qualquer ponto da seta ou arraste os botões <strong>+</strong> no conector para criar dobras fixas. Segure <strong>Shift</strong> ao arrastar para ângulos retos (90°).
+          </div>
+          ${
+            customWps.length === 0
+              ? `<div style="font-size:11px;color:#71717a;">Nenhuma inflexão fixa (roteamento automático ativo).</div>`
+              : customWps
+                  .map(
+                    (wp, idx) => `
+                  <div class="arc-item" style="display:flex;align-items:center;justify-content:space-between;gap:6px;">
+                    <span style="font-family:var(--font-mono);font-size:11px;">#${idx + 1}: (${wp.x}, ${wp.y})</span>
+                    <button class="btn sm danger" data-rm-wp="${idx}" title="Remover este ponto de inflexão">×</button>
+                  </div>`
+                  )
+                  .join("")
+          }
         </div>
       `;
 
@@ -4163,6 +4503,22 @@
         state.selected = { type: "transition", id: tr.name };
         renderCanvas();
         renderRightPanel();
+      });
+      const addMidBtn = document.getElementById("btnAddMidWaypoint");
+      if (addMidBtn) {
+        addMidBtn.addEventListener("click", () => {
+          const rendered = (state.lastRenderedArcs || []).find((a) => a.id === sel.id);
+          const mx = rendered ? rendered.lx : 300;
+          const my = rendered ? rendered.ly : 200;
+          insertArcWaypointAt(sel.id, mx, my);
+        });
+      }
+      const clrWpBtn = document.getElementById("btnClearWaypoints");
+      if (clrWpBtn) {
+        clrWpBtn.addEventListener("click", () => clearArcWaypoints(sel.id));
+      }
+      dom.tabBody.querySelectorAll("[data-rm-wp]").forEach((b) => {
+        b.addEventListener("click", () => removeArcWaypoint(sel.id, Number(b.dataset.rmWp)));
       });
     }
   }
@@ -5024,9 +5380,7 @@
   }
 
   function isCompactViewport() {
-    // When 2-model split is active, treat the narrower left half as compact below 1450px
-    const splitOn = dom.appShell && dom.appShell.classList.contains("split-active");
-    return window.innerWidth < (splitOn ? 1450 : 1100);
+    return window.innerWidth < 740;
   }
 
   function syncPanelButtons() {
@@ -5038,25 +5392,57 @@
       ? dom.workspace.classList.contains("mobile-inspector-open")
       : !dom.workspace.classList.contains("hide-inspector");
     const gridFocused = !codeOpen && !inspOpen;
+    const zenActive = codeOpen && !inspOpen;
+    const studioActive = codeOpen && inspOpen;
 
     if (dom.btnToggleCode) {
-      dom.btnToggleCode.classList.toggle("active", codeOpen);
-      dom.btnToggleCode.setAttribute("aria-pressed", String(codeOpen));
-    }
-    if (dom.btnToggleInspector) {
-      dom.btnToggleInspector.classList.toggle("active", inspOpen);
-      dom.btnToggleInspector.setAttribute("aria-pressed", String(inspOpen));
+      dom.btnToggleCode.classList.toggle("active", zenActive);
+      dom.btnToggleCode.setAttribute("aria-pressed", String(zenActive));
     }
     if (dom.btnFocusCanvas) {
       dom.btnFocusCanvas.classList.toggle("active", gridFocused);
       dom.btnFocusCanvas.setAttribute("aria-pressed", String(gridFocused));
+    }
+    if (dom.btnToggleInspector) {
+      dom.btnToggleInspector.classList.toggle("active", studioActive || (compact && inspOpen));
+      dom.btnToggleInspector.setAttribute("aria-pressed", String(studioActive || (compact && inspOpen)));
     }
     if (dom.drawerBackdrop) {
       dom.drawerBackdrop.classList.toggle("visible", compact && (codeOpen || inspOpen));
     }
   }
 
-  let savedDesktopPanels = { hideCode: false, hideInspector: false };
+  function setLayoutMode(mode, fitAfter = true) {
+    state.layoutMode = mode;
+    const compact = isCompactViewport();
+    if (compact) {
+      if (mode === "zen") {
+        dom.workspace.classList.add("mobile-code-open");
+        dom.workspace.classList.remove("mobile-inspector-open");
+      } else if (mode === "studio") {
+        dom.workspace.classList.add("mobile-inspector-open");
+        dom.workspace.classList.remove("mobile-code-open");
+      } else {
+        closeAllMobileDrawers();
+      }
+      syncPanelButtons();
+      return;
+    }
+
+    if (mode === "zen") {
+      // VS Code Zen Mode: Code on the left + Editable Diagram Preview on the right (no Inspector clutter)
+      dom.workspace.classList.remove("hide-code");
+      dom.workspace.classList.add("hide-inspector");
+    } else if (mode === "canvas") {
+      // Figma Canvas Mode: 100% full-bleed diagram canvas
+      dom.workspace.classList.add("hide-code", "hide-inspector");
+    } else {
+      // 3-Pane Studio Mode: Code + Canvas + Inspector
+      dom.workspace.classList.remove("hide-code", "hide-inspector");
+    }
+    syncPanelButtons();
+    if (fitAfter) setTimeout(fitView, 150);
+  }
 
   function toggleFocusCanvas(forceFocus = null) {
     const compact = isCompactViewport();
@@ -5064,31 +5450,7 @@
       ? !dom.workspace.classList.contains("mobile-code-open") && !dom.workspace.classList.contains("mobile-inspector-open")
       : dom.workspace.classList.contains("hide-code") && dom.workspace.classList.contains("hide-inspector");
     const wantFocus = forceFocus !== null ? forceFocus : !currentlyFocused;
-
-    if (compact) {
-      if (wantFocus) closeAllMobileDrawers();
-      else toggleInspectorPane(false);
-      return;
-    }
-
-    if (wantFocus) {
-      if (!currentlyFocused) {
-        savedDesktopPanels = {
-          hideCode: dom.workspace.classList.contains("hide-code"),
-          hideInspector: dom.workspace.classList.contains("hide-inspector")
-        };
-      }
-      dom.workspace.classList.add("hide-code", "hide-inspector");
-      if (forceFocus === null) showToast("Modo Focar Grid ativo (F para restaurar)");
-    } else {
-      dom.workspace.classList.toggle("hide-code", savedDesktopPanels.hideCode);
-      dom.workspace.classList.toggle("hide-inspector", savedDesktopPanels.hideInspector);
-      if (dom.workspace.classList.contains("hide-code") && dom.workspace.classList.contains("hide-inspector")) {
-        dom.workspace.classList.remove("hide-code", "hide-inspector");
-      }
-    }
-    syncPanelButtons();
-    setTimeout(fitView, 160);
+    setLayoutMode(wantFocus ? "canvas" : "zen", true);
   }
 
   // Draggable Pane Splitters (Code <-> Canvas & Canvas <-> Inspector) with localStorage persistence
@@ -5151,7 +5513,7 @@
   setupPaneSplitter(dom.splitterCode, "--code-w", STORAGE_CODE_W, 370, 220, 760, false);
   setupPaneSplitter(dom.splitterInspector, "--inspector-w", STORAGE_INSP_W, 340, 250, 560, true);
 
-  // Dual-Model Simultaneous Split Workspace (Model A | Model B)
+  // VS Code Style Split Editor (opens second editor pane in the Empty Welcome State!)
   function toggleSplitModel(forceActive = null) {
     if (!dom.appShell || !dom.splitFrame) return;
     const active = forceActive !== null ? forceActive : !dom.appShell.classList.contains("split-active");
@@ -5162,25 +5524,414 @@
     }
 
     if (active) {
-      // Load a complementary preset in Model B if iframe is empty
+      // Newly split editor starts in VS Code Empty Welcome State inviting the user to open a file!
       if (!dom.splitFrame.src || dom.splitFrame.src === "about:blank") {
-        const curPid = state.fileKey && state.fileKey.startsWith("preset:") ? state.fileKey.slice(7) : "";
-        const alt = PRESETS.find((p) => p.id !== curPid) || PRESETS[0];
-        const presetParam = alt ? `&preset=${encodeURIComponent(alt.id)}` : "";
-        dom.splitFrame.src = `index.html?embedded=1&focus=1${presetParam}`;
+        dom.splitFrame.src = "index.html?embedded=1&empty=1";
       }
-      // Give Model A clean canvas breathing room too!
-      if (!dom.workspace.classList.contains("hide-code") || !dom.workspace.classList.contains("hide-inspector")) {
-        toggleFocusCanvas(true);
-      }
-      showToast("Modo 2 Modelos simultâneos ativado");
+      showToast("Tela dividida — clique no novo editor para abrir um arquivo .mry");
     } else {
       syncPanelButtons();
       setTimeout(fitView, 180);
     }
   }
 
-  if (dom.btnFocusCanvas) dom.btnFocusCanvas.addEventListener("click", () => toggleFocusCanvas());
+  // =========================================================================
+  // VS CODE EMPTY EDITOR WELCOME STATE
+  // =========================================================================
+  function renderEmptyEditorRecents() {
+    if (!dom.emptyRecentList) return;
+    const idx = loadMemoryIndex();
+    const customFiles = Object.values(idx)
+      .filter((e) => e && e.isCustomFile)
+      .sort((a, b) => String(b.savedAt || "").localeCompare(String(a.savedAt || "")));
+
+    let html = "";
+    for (const cf of customFiles.slice(0, 4)) {
+      html += `
+        <button class="empty-recent-item" type="button" data-empty-open="${escapeXml(cf.key)}">
+          <span>${escapeXml(cf.displayName)}</span>
+          <span class="tag">memória local</span>
+        </button>
+      `;
+    }
+    for (const p of PRESETS) {
+      html += `
+        <button class="empty-recent-item" type="button" data-empty-open="preset:${escapeXml(p.id)}">
+          <span>${escapeXml(p.name)}</span>
+          <span class="tag">.mry</span>
+        </button>
+      `;
+    }
+    dom.emptyRecentList.innerHTML = html;
+    dom.emptyRecentList.querySelectorAll("[data-empty-open]").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const key = btn.dataset.emptyOpen;
+        if (key.startsWith("preset:")) {
+          const pr = PRESETS.find((x) => x.id === key.slice(7));
+          if (pr) openWorkspaceEntry(key, pr.name, pr.code, true);
+        } else if (key.startsWith("file:")) {
+          const mem = getFileMemory(key);
+          if (mem && mem.code) openWorkspaceEntry(key, key.slice(5), mem.code, true);
+        }
+      });
+    });
+  }
+
+  function enterEmptyEditorState() {
+    state.isEmptyEditor = true;
+    if (state.simMode) exitSimMode(true);
+    closeAllMobileDrawers();
+    if (dom.workspace) dom.workspace.classList.add("is-empty");
+    if (dom.emptyEditorState) dom.emptyEditorState.style.display = "flex";
+    if (dom.activeFileTab) dom.activeFileTab.style.opacity = "0.45";
+    renderEmptyEditorRecents();
+  }
+
+  function exitEmptyEditorState() {
+    state.isEmptyEditor = false;
+    if (dom.workspace) dom.workspace.classList.remove("is-empty");
+    if (dom.emptyEditorState) dom.emptyEditorState.style.display = "none";
+    if (dom.activeFileTab) dom.activeFileTab.style.opacity = "1";
+  }
+
+  function createNewBlankModel(modelType) {
+    const isRbd = modelType === "RBD";
+    const stamp = Math.floor(100 + Math.random() * 899);
+    const name = isRbd ? `NovoRBD_${stamp}` : `NovaSPN_${stamp}`;
+    const code = isRbd
+      ? `MTTF_A = 1000.0;\nMTTR_A = 4.0;\n\nRBD ${name} {\n    block Comp_A( MTTF = MTTF_A, MTTR = MTTR_A );\n    block Comp_B( MTTF = MTTF_A, MTTR = MTTR_A );\n    series TopSeries( Comp_A, Comp_B );\n    top TopSeries;\n}\n`
+      : `lambda = 1.0;\nmu = 2.0;\n\nSPN ${name} {\n    place Idle( tokens = 1 );\n    place Busy;\n\n    timedTransition Start(\n        inputs = [Idle],\n        outputs = [Busy],\n        delay = ( type = "Exponential", parameters = ( Mean = lambda ) )\n    );\n\n    timedTransition Finish(\n        inputs = [Busy],\n        outputs = [Idle],\n        delay = ( type = "Exponential", parameters = ( Mean = mu ) )\n    );\n}\n`;
+    openWorkspaceEntry(`file:${name}.mry`, `${name}.mry`, code, false);
+    saveCurrentToMemory();
+    showToast(`Criado ${name}.mry`);
+  }
+
+  if (dom.btnCloseFile) {
+    dom.btnCloseFile.addEventListener("click", (e) => {
+      e.stopPropagation();
+      enterEmptyEditorState();
+    });
+  }
+  if (dom.btnEmptyOpenCenter) {
+    dom.btnEmptyOpenCenter.addEventListener("click", () => dom.fileInput.click());
+    dom.btnEmptyOpenCenter.addEventListener("dragover", (e) => {
+      e.preventDefault();
+      dom.btnEmptyOpenCenter.classList.add("drag-over");
+    });
+    dom.btnEmptyOpenCenter.addEventListener("dragleave", () => {
+      dom.btnEmptyOpenCenter.classList.remove("drag-over");
+    });
+    dom.btnEmptyOpenCenter.addEventListener("drop", (e) => {
+      e.preventDefault();
+      dom.btnEmptyOpenCenter.classList.remove("drag-over");
+      const f = e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0];
+      if (!f) return;
+      const reader = new FileReader();
+      reader.onload = () => {
+        const diskCode = String(reader.result || "");
+        openWorkspaceEntry("file:" + f.name, f.name, diskCode, false);
+        saveCurrentToMemory();
+      };
+      reader.readAsText(f, "utf-8");
+    });
+  }
+  if (dom.btnEmptyNewSpn) dom.btnEmptyNewSpn.addEventListener("click", () => createNewBlankModel("SPN"));
+  if (dom.btnEmptyNewRbd) dom.btnEmptyNewRbd.addEventListener("click", () => createNewBlankModel("RBD"));
+
+  // =========================================================================
+  // REAL-TIME COLLABORATIVE EDITING (WEBRTC P2P + BROADCASTCHANNEL)
+  // =========================================================================
+  function updateCollabUi() {
+    const c = state.collab;
+    const peerCount = c.remotePeers.size;
+    if (dom.collabDot) dom.collabDot.classList.toggle("online", c.active);
+    if (dom.collabBtnLabel) {
+      dom.collabBtnLabel.textContent = c.active ? `Sala (${peerCount + 1})` : "Colaborar";
+    }
+    if (dom.btnCollabToggle) {
+      dom.btnCollabToggle.textContent = c.active ? "Sair" : "Conectar";
+      dom.btnCollabToggle.classList.toggle("danger", c.active);
+      dom.btnCollabToggle.classList.toggle("primary", !c.active);
+    }
+    if (dom.collabStatusRow) dom.collabStatusRow.classList.toggle("online", c.active);
+    if (dom.collabStatusText) {
+      dom.collabStatusText.textContent = c.active
+        ? `Ao vivo na sala '${c.roomId}' • ${peerCount} colega(s) conectado(s)`
+        : "Offline (sessão individual)";
+    }
+    if (dom.btnCollabCopyLink) {
+      dom.btnCollabCopyLink.style.display = c.active ? "inline-flex" : "none";
+    }
+  }
+
+  function renderCollabCursors() {
+    if (!dom.svg) return;
+    const layer = dom.svg.querySelector("#collabLayer");
+    if (!layer) return;
+    if (!state.collab.active || state.collab.remotePeers.size === 0) {
+      layer.innerHTML = "";
+      return;
+    }
+    const now = Date.now();
+    let svg = "";
+    for (const [pid, peer] of state.collab.remotePeers.entries()) {
+      if (now - (peer.ts || 0) > 25000) {
+        state.collab.remotePeers.delete(pid);
+        continue;
+      }
+      if (!Number.isFinite(peer.x) || !Number.isFinite(peer.y)) continue;
+      const col = peer.color || "#3b82f6";
+      const nm = String(peer.name || "Colega");
+      const pillW = Math.max(48, nm.length * 6.2 + 12);
+      svg += `
+        <g transform="translate(${peer.x.toFixed(1)}, ${peer.y.toFixed(1)})">
+          <path d="M 0 0 L 11 4.5 L 6.5 7 L 4.5 11.5 Z" fill="${escapeXml(col)}" stroke="#ffffff" stroke-width="1.1" />
+          <rect x="10" y="9" width="${pillW.toFixed(1)}" height="16" rx="4" fill="${escapeXml(col)}" />
+          <text x="${(10 + pillW / 2).toFixed(1)}" y="20" text-anchor="middle" font-family="'Inter', sans-serif" font-size="9.5" font-weight="600" fill="#ffffff">${escapeXml(nm)}</text>
+        </g>
+      `;
+    }
+    layer.innerHTML = svg;
+  }
+
+  function sendCollabPacket(pkt) {
+    const c = state.collab;
+    if (!c.active) return;
+    const payload = { ...pkt, senderId: c.selfId, senderName: c.userName, senderColor: c.userColor, ts: Date.now() };
+    if (c.bc) {
+      try { c.bc.postMessage(payload); } catch (_) {}
+    }
+    for (const conn of c.conns.values()) {
+      if (conn && conn.open) {
+        try { conn.send(payload); } catch (_) {}
+      }
+    }
+  }
+
+  function broadcastCollabCursor(svgPt) {
+    const c = state.collab;
+    if (!c.active || !svgPt) return;
+    const now = performance.now();
+    if (now - c.lastCursorSent < 45) return;
+    c.lastCursorSent = now;
+    sendCollabPacket({ type: "cursor", x: svgPt.x, y: svgPt.y });
+  }
+
+  function broadcastCollabState() {
+    const c = state.collab;
+    if (!c.active || c.suppressBroadcast || state.isEmptyEditor) return;
+    sendCollabPacket({
+      type: "state",
+      code: dom.mryEditor.value,
+      positions: state.positions,
+      zones: state.zones,
+      simMode: state.simMode,
+      simMarking: state.simMarking
+    });
+  }
+
+  function handleCollabPacket(pkt) {
+    if (!pkt || pkt.senderId === state.collab.selfId) return;
+    const c = state.collab;
+    const prev = c.remotePeers.get(pkt.senderId) || {};
+    c.remotePeers.set(pkt.senderId, {
+      name: pkt.senderName || prev.name || "Colega",
+      color: pkt.senderColor || prev.color || "#3b82f6",
+      x: pkt.type === "cursor" ? pkt.x : prev.x,
+      y: pkt.type === "cursor" ? pkt.y : prev.y,
+      ts: Date.now()
+    });
+
+    if (pkt.type === "cursor") {
+      renderCollabCursors();
+      updateCollabUi();
+      return;
+    }
+
+    if (pkt.type === "hello") {
+      updateCollabUi();
+      broadcastCollabState();
+      return;
+    }
+
+    if (pkt.type === "state" && typeof pkt.code === "string") {
+      c.suppressBroadcast = true;
+      try {
+        if (state.isEmptyEditor) exitEmptyEditorState();
+        state.suppressEditorInput = true;
+        dom.mryEditor.value = pkt.code;
+        state.suppressEditorInput = false;
+        if (pkt.positions) state.positions = deepClone(pkt.positions);
+        if (pkt.zones) state.zones = deepClone(pkt.zones);
+        loadFromCode(pkt.code, false, true);
+        if (typeof pkt.simMode === "boolean" && pkt.simMode && pkt.simMarking) {
+          state.simMode = true;
+          state.simMarking = { ...pkt.simMarking };
+          updateModeToolbars();
+          renderCanvas();
+        }
+        renderRightPanel();
+      } finally {
+        c.suppressBroadcast = false;
+      }
+      updateCollabUi();
+    }
+  }
+
+  function ensurePeerJsLoaded() {
+    if (window.Peer) return Promise.resolve(window.Peer);
+    return new Promise((resolve) => {
+      const s = document.createElement("script");
+      s.src = "https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js";
+      s.async = true;
+      s.onload = () => resolve(window.Peer || null);
+      s.onerror = () => resolve(null);
+      document.head.appendChild(s);
+    });
+  }
+
+  function attachPeerConnection(conn, isHost) {
+    const c = state.collab;
+    if (!conn) return;
+    conn.on("open", () => {
+      c.conns.set(conn.peer, conn);
+      updateCollabUi();
+      conn.send({
+        type: "hello",
+        senderId: c.selfId,
+        senderName: c.userName,
+        senderColor: c.userColor
+      });
+    });
+    conn.on("data", (data) => {
+      handleCollabPacket(data);
+      // Host relays packets to other WebRTC peers in the room
+      if (isHost) {
+        for (const [pid, other] of c.conns.entries()) {
+          if (pid !== conn.peer && other && other.open) {
+            try { other.send(data); } catch (_) {}
+          }
+        }
+      }
+    });
+    conn.on("close", () => {
+      c.conns.delete(conn.peer);
+      updateCollabUi();
+    });
+  }
+
+  async function startCollabSession(roomIdRaw) {
+    const cleanRoom = String(roomIdRaw || "")
+      .trim()
+      .toLowerCase()
+      .replace(/[^a-z0-9_-]/g, "-") || "modcs-room";
+    stopCollabSession(true);
+
+    const c = state.collab;
+    if (dom.inpCollabName && dom.inpCollabName.value.trim()) {
+      c.userName = dom.inpCollabName.value.trim();
+    }
+    if (dom.inpCollabRoom) dom.inpCollabRoom.value = cleanRoom;
+    c.roomId = cleanRoom;
+    c.active = true;
+
+    // 1. Instant local cross-tab / split-pane BroadcastChannel transport
+    if (typeof BroadcastChannel !== "undefined") {
+      c.bc = new BroadcastChannel(`mry_studio_collab_${cleanRoom}`);
+      c.bc.onmessage = (ev) => handleCollabPacket(ev.data);
+    }
+
+    updateCollabUi();
+    sendCollabPacket({ type: "hello" });
+
+    // 2. Serverless Internet WebRTC P2P transport via PeerJS public broker
+    const PeerCtor = await ensurePeerJsLoaded();
+    if (PeerCtor && c.active && c.roomId === cleanRoom) {
+      const hostPeerId = `mry-studio-room-${cleanRoom}`;
+      try {
+        const peer = new PeerCtor(hostPeerId);
+        c.peer = peer;
+        peer.on("open", () => {
+          updateCollabUi();
+        });
+        peer.on("connection", (conn) => attachPeerConnection(conn, true));
+        peer.on("error", (err) => {
+          // If host ID is already taken by the room creator, join as a guest peer and connect to host!
+          if (err && err.type === "unavailable-id" && c.active) {
+            try { peer.destroy(); } catch (_) {}
+            const guest = new PeerCtor();
+            c.peer = guest;
+            guest.on("open", () => {
+              const conn = guest.connect(hostPeerId, { reliable: true });
+              attachPeerConnection(conn, false);
+            });
+          }
+        });
+      } catch (_) {}
+    }
+
+    showToast(`Colaboração ativa na sala '${cleanRoom}'`);
+  }
+
+  function stopCollabSession(silent = false) {
+    const c = state.collab;
+    c.active = false;
+    if (c.bc) {
+      try { c.bc.close(); } catch (_) {}
+      c.bc = null;
+    }
+    for (const conn of c.conns.values()) {
+      try { conn.close(); } catch (_) {}
+    }
+    c.conns.clear();
+    if (c.peer) {
+      try { c.peer.destroy(); } catch (_) {}
+      c.peer = null;
+    }
+    c.remotePeers.clear();
+    renderCollabCursors();
+    updateCollabUi();
+    if (!silent) showToast("Sessão colaborativa encerrada");
+  }
+
+  if (dom.inpCollabName) {
+    dom.inpCollabName.value = state.collab.userName;
+    dom.inpCollabName.addEventListener("change", () => {
+      const v = dom.inpCollabName.value.trim();
+      if (v) state.collab.userName = v;
+    });
+  }
+  if (dom.inpCollabRoom) {
+    dom.inpCollabRoom.value = "modcs-spn";
+  }
+  if (dom.btnCollabToggle) {
+    dom.btnCollabToggle.addEventListener("click", () => {
+      if (state.collab.active) stopCollabSession(false);
+      else startCollabSession(dom.inpCollabRoom ? dom.inpCollabRoom.value : "modcs-spn");
+    });
+  }
+  if (dom.btnCollabCopyLink) {
+    dom.btnCollabCopyLink.addEventListener("click", () => {
+      const url = new URL(window.location.href);
+      url.searchParams.set("room", state.collab.roomId || "modcs-spn");
+      navigator.clipboard.writeText(url.toString()).then(() => {
+        showToast("Link colaborativo copiado!");
+      });
+    });
+  }
+
+  if (dom.btnToggleCode) dom.btnToggleCode.addEventListener("click", () => setLayoutMode("zen"));
+  if (dom.btnFocusCanvas) dom.btnFocusCanvas.addEventListener("click", () => setLayoutMode("canvas"));
+  if (dom.btnToggleInspector) {
+    dom.btnToggleInspector.addEventListener("click", () => {
+      if (isCompactViewport()) {
+        toggleInspectorPane();
+        return;
+      }
+      const inspHidden = dom.workspace.classList.contains("hide-inspector");
+      setLayoutMode(inspHidden ? "studio" : "zen");
+    });
+  }
   if (dom.btnSplitModel) dom.btnSplitModel.addEventListener("click", () => toggleSplitModel());
   if (dom.btnCloseEmbeddedSplit) {
     dom.btnCloseEmbeddedSplit.addEventListener("click", () => {
@@ -5260,7 +6011,6 @@
   };
 
   dom.btnCollapseCode.addEventListener("click", () => toggleCodePane(true));
-  if (dom.btnToggleInspector) dom.btnToggleInspector.addEventListener("click", () => toggleInspectorPane());
   if (dom.btnCloseInspector) dom.btnCloseInspector.addEventListener("click", () => toggleInspectorPane(true));
   if (dom.drawerBackdrop) dom.drawerBackdrop.addEventListener("click", closeAllMobileDrawers);
   dom.btnWideCode.addEventListener("click", () => {
@@ -5271,25 +6021,39 @@
     setTimeout(fitView, 190);
   });
 
-  // Export dropdown popover
-  const closeExportMenu = () => {
-    if (!dom.exportMenu || !dom.btnExportMenu) return;
-    dom.exportMenu.classList.remove("open");
-    dom.btnExportMenu.setAttribute("aria-expanded", "false");
+  // Topbar Popovers: View, Collaborate, Export
+  const closeAllMenus = (exceptMenu = null) => {
+    [
+      [dom.exportMenu, dom.btnExportMenu],
+      [dom.viewMenu, dom.btnViewMenu],
+      [dom.collabMenu, dom.btnCollabMenu]
+    ].forEach(([menu, btn]) => {
+      if (!menu || !btn || menu === exceptMenu) return;
+      menu.classList.remove("open");
+      btn.setAttribute("aria-expanded", "false");
+    });
   };
-  if (dom.btnExportMenu && dom.exportMenu) {
-    dom.btnExportMenu.addEventListener("click", (e) => {
+  const closeExportMenu = () => closeAllMenus(null);
+
+  const wirePopover = (btn, menu) => {
+    if (!btn || !menu) return;
+    btn.addEventListener("click", (e) => {
       e.stopPropagation();
-      const willOpen = !dom.exportMenu.classList.contains("open");
-      dom.exportMenu.classList.toggle("open", willOpen);
-      dom.btnExportMenu.setAttribute("aria-expanded", String(willOpen));
+      const willOpen = !menu.classList.contains("open");
+      closeAllMenus(menu);
+      menu.classList.toggle("open", willOpen);
+      btn.setAttribute("aria-expanded", String(willOpen));
     });
-    document.addEventListener("click", (e) => {
-      if (!dom.exportMenu.contains(e.target) && e.target !== dom.btnExportMenu) {
-        closeExportMenu();
-      }
-    });
-  }
+  };
+  wirePopover(dom.btnExportMenu, dom.exportMenu);
+  wirePopover(dom.btnViewMenu, dom.viewMenu);
+  wirePopover(dom.btnCollabMenu, dom.collabMenu);
+
+  document.addEventListener("click", (e) => {
+    const insideAny = [dom.exportMenu, dom.viewMenu, dom.collabMenu].some((m) => m && m.contains(e.target));
+    const isBtn = [dom.btnExportMenu, dom.btnViewMenu, dom.btnCollabMenu].includes(e.target);
+    if (!insideAny && !isBtn) closeAllMenus(null);
+  });
 
   // Native-feeling Touch Gestures on Canvas (2-finger Pinch-Zoom + Pan, 1-finger Pan & Node Tap/Drag)
   const touchState = { mode: null, lastDist: 0, lastMid: null, startPt: null, origView: null, nodeDrag: null, lastTap: { id: null, time: 0 } };
@@ -5597,8 +6361,6 @@
   dom.btnFitView.addEventListener("click", fitView);
   dom.btnRoundTrip.addEventListener("click", verifyRoundTrip);
 
-  dom.btnToggleCode.addEventListener("click", () => toggleCodePane());
-
   dom.chkShowMeta.addEventListener("change", (e) => {
     state.showMeta = e.target.checked;
     renderCanvas();
@@ -5608,18 +6370,27 @@
     renderCanvas();
     scheduleAutosave();
   });
+  const setMirrorsEnabled = (enabled) => {
+    state.useMirrors = Boolean(enabled);
+    if (dom.chkMirrors) dom.chkMirrors.checked = state.useMirrors;
+    if (dom.btnQuickMirrors) {
+      dom.btnQuickMirrors.classList.toggle("active", state.useMirrors);
+      dom.btnQuickMirrors.setAttribute("aria-pressed", String(state.useMirrors));
+    }
+    renderCanvas();
+    scheduleAutosave();
+    setParseStatus(
+      true,
+      state.useMirrors
+        ? `Espelhos ativados (${(state.lastMirrors || []).length} espelhos projetados — código .mry inalterado)`
+        : "Modo grafo direto restaurado"
+    );
+  };
   if (dom.chkMirrors) {
-    dom.chkMirrors.addEventListener("change", (e) => {
-      state.useMirrors = e.target.checked;
-      renderCanvas();
-      scheduleAutosave();
-      setParseStatus(
-        true,
-        state.useMirrors
-          ? `Lugares-Espelho ativados (${(state.lastMirrors || []).length} espelhos projetados — código .mry inalterado)`
-          : "Modo grafo direto restaurado"
-      );
-    });
+    dom.chkMirrors.addEventListener("change", (e) => setMirrorsEnabled(e.target.checked));
+  }
+  if (dom.btnQuickMirrors) {
+    dom.btnQuickMirrors.addEventListener("click", () => setMirrorsEnabled(!state.useMirrors));
   }
   if (dom.btnToggleSim) dom.btnToggleSim.addEventListener("click", toggleSimMode);
   if (dom.btnSimStep) dom.btnSimStep.addEventListener("click", () => stepSimRandom(1));
@@ -5728,11 +6499,11 @@
     }
   });
 
-  // Boot: restore last active file from indexed memory if available, else default preset
+  // Boot: default to VS Code Zen Split (Code + Editable Diagram Preview) on desktop
   if (window.innerWidth < 900 && dom.legendOverlay) {
     dom.legendOverlay.dataset.collapsed = "1";
   }
-  syncPanelButtons();
+  setLayoutMode("zen", false);
   rebuildPresetDropdown(false);
   let booted = false;
   try {
@@ -5758,7 +6529,7 @@
     openWorkspaceEntry("preset:" + PRESETS[0].id, PRESETS[0].name, PRESETS[0].code, true);
   }
 
-  // Optional URL parameters for deep-linking / embedded dual-model split (?preset=...&mirrors=1&sim=1&focus=1&split=1&embedded=1)
+  // Optional URL parameters for deep-linking / embedded dual-model split (?preset=...&mirrors=1&sim=1&focus=1&zen=1&empty=1&room=...&split=1&embedded=1)
   try {
     const qp = new URLSearchParams(window.location.search);
     if (qp.get("embedded") === "1") {
@@ -5771,12 +6542,20 @@
       if (pr) openWorkspaceEntry("preset:" + pr.id, pr.name, pr.code, false);
     }
     if (qp.get("mirrors") === "1") {
-      state.useMirrors = true;
-      if (dom.chkMirrors) dom.chkMirrors.checked = true;
-      renderCanvas();
+      setMirrorsEnabled(true);
     }
-    if (qp.get("focus") === "1") {
-      toggleFocusCanvas(true);
+    if (qp.get("focus") === "1" || qp.get("mode") === "canvas") {
+      setLayoutMode("canvas", true);
+    } else if (qp.get("mode") === "studio") {
+      setLayoutMode("studio", true);
+    } else if (qp.get("zen") === "1" || qp.get("mode") === "zen") {
+      setLayoutMode("zen", true);
+    }
+    if (qp.get("empty") === "1") {
+      enterEmptyEditorState();
+    }
+    if (qp.get("room")) {
+      startCollabSession(qp.get("room"));
     }
     if (qp.get("split") === "1" && qp.get("embedded") !== "1") {
       toggleSplitModel(true);

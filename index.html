@@ -3,40 +3,145 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
-  <title>MRY Visual Studio — Conversor Determinístico MRY ↔ Visual (SPN/RBD)</title>
+  <title>MRY Studio — SPN &amp; RBD Visual Modeling</title>
   <link rel="manifest" href="manifest.webmanifest" />
-  <meta name="theme-color" content="#0b1120" />
+  <meta name="theme-color" content="#09090b" />
   <link rel="stylesheet" href="styles.css" />
 </head>
 <body>
   <header class="topbar" role="banner">
-    <div class="brand">
-      <span class="brand-logo" aria-hidden="true">
-        <svg viewBox="0 0 24 24" fill="none">
-          <circle cx="6.5" cy="12" r="4" stroke="#38bdf8" stroke-width="2.1"/>
-          <rect x="15.5" y="6.5" width="4.5" height="11" rx="1.2" fill="#818cf8"/>
-          <path d="M10.8 12H14.5" stroke="#e2e8f0" stroke-width="1.8" stroke-linecap="round"/>
-        </svg>
-      </span>
-      <span class="brand-title">MRY Studio</span>
-      <span class="brand-badge">MRY ↔ VISUAL</span>
+    <div class="topbar-left">
+      <div class="brand" title="MRY Studio — Conversor Determinístico MRY ↔ Visual">
+        <span class="brand-logo" aria-hidden="true">
+          <svg viewBox="0 0 20 20" fill="none">
+            <circle cx="5.8" cy="10" r="3.3" stroke="currentColor" stroke-width="1.7"/>
+            <rect x="13" y="5" width="3.6" height="10" rx="0.9" fill="currentColor"/>
+            <path d="M9.3 10H12.6" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+          </svg>
+        </span>
+        <span class="brand-title">MRY</span>
+      </div>
+
+      <div class="file-tab-bar">
+        <input type="file" id="fileInput" accept=".mry,.txt" hidden />
+        <div class="active-file-tab" id="activeFileTab">
+          <select id="presetSelect" aria-label="Modelo ativo ou arquivo salvo" title="Trocar modelo aberto"></select>
+          <span id="autosaveBadge" class="autosave-dot" title="Sincronizado na memória local"></span>
+          <button class="tab-close-btn" id="btnCloseFile" title="Fechar arquivo atual (voltar à tela inicial do editor)" aria-label="Fechar arquivo atual">×</button>
+        </div>
+        <button class="btn ghost icon-only-sm" id="btnOpenFile" title="Abrir arquivo .mry do computador (Ctrl+O)" aria-label="Abrir arquivo .mry">
+          <svg viewBox="0 0 20 20" fill="none" class="btn-ico"><path d="M3.2 6.2C3.2 5.4 3.8 4.8 4.6 4.8H8L9.6 6.5H15.4C16.2 6.5 16.8 7.1 16.8 7.9V14.4C16.8 15.2 16.2 15.8 15.4 15.8H4.6C3.8 15.8 3.2 15.2 3.2 14.4V6.2Z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/></svg>
+          <span class="lbl-md">Abrir</span>
+        </button>
+      </div>
     </div>
 
+    <!-- CENTER: VS CODE ZEN SPLIT vs FIGMA CANVAS vs 3-PANE STUDIO -->
     <div class="topbar-center">
-      <select id="presetSelect" aria-label="Selecionar modelo ou arquivo salvo" title="Carregar modelo ou memória salva"></select>
-      <span id="autosaveBadge" class="autosave-badge" title="Memória automática indexada por arquivo"></span>
+      <div class="mode-segmented" id="layoutModeSeg" role="group" aria-label="Modo de layout do workspace">
+        <button class="seg-btn" id="btnToggleCode" data-layout-mode="zen" title="VS Code Zen Split: Código .mry + Diagrama Interativo lado a lado">
+          <svg viewBox="0 0 18 18" fill="none" class="seg-ico"><rect x="2.2" y="3.2" width="13.6" height="11.6" rx="1.8" stroke="currentColor" stroke-width="1.4"/><path d="M8.5 3.2V14.8" stroke="currentColor" stroke-width="1.4"/></svg>
+          <span>Zen Split</span>
+        </button>
+        <button class="seg-btn" id="btnFocusCanvas" data-layout-mode="canvas" title="Figma Canvas: Foco 100% no diagrama editável [F]">
+          <svg viewBox="0 0 18 18" fill="none" class="seg-ico"><rect x="2.2" y="3.2" width="13.6" height="11.6" rx="1.8" stroke="currentColor" stroke-width="1.4"/><circle cx="6.8" cy="9" r="1.8" stroke="currentColor" stroke-width="1.3"/><rect x="10.8" y="6.5" width="2.2" height="5" rx="0.5" fill="currentColor"/></svg>
+          <span>Canvas</span>
+        </button>
+        <button class="seg-btn" id="btnToggleInspector" data-layout-mode="studio" title="Modo Estúdio: Código + Canvas + Inspetor fixo">
+          <svg viewBox="0 0 18 18" fill="none" class="seg-ico"><rect x="2.2" y="3.2" width="13.6" height="11.6" rx="1.8" stroke="currentColor" stroke-width="1.4"/><path d="M6.5 3.2V14.8M11.8 3.2V14.8" stroke="currentColor" stroke-width="1.3"/></svg>
+          <span>Inspetor</span>
+        </button>
+      </div>
     </div>
 
+    <!-- RIGHT: COMPACT PRECISION ACTIONS (NO CLUTTER) -->
     <div class="topbar-controls">
-      <input type="file" id="fileInput" accept=".mry,.txt" hidden />
-      <button class="btn icon-only-sm" id="btnOpenFile" title="Abrir arquivo .mry do dispositivo" aria-label="Abrir arquivo .mry">
-        <svg viewBox="0 0 20 20" fill="none" class="btn-ico"><path d="M3 6.5C3 5.7 3.7 5 4.5 5H8.2L9.8 6.8H15.5C16.3 6.8 17 7.5 17 8.3V14.5C17 15.3 16.3 16 15.5 16H4.5C3.7 16 3 15.3 3 14.5V6.5Z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/></svg>
-        <span class="lbl-md">Abrir</span>
+      <button class="btn ghost" id="btnQuickMirrors" aria-pressed="false" title="Projetar arcos longos como Espelhos locais (↗) sem alterar o código .mry">
+        <svg viewBox="0 0 18 18" fill="none" class="btn-ico"><circle cx="9" cy="9" r="6" stroke="currentColor" stroke-width="1.4" stroke-dasharray="2.5 2"/><path d="M6.8 11.2L11.2 6.8M11.2 6.8H7.8M11.2 6.8V10.2" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        <span class="lbl-md">Espelhos</span>
+      </button>
+
+      <!-- VIEW & LAYOUT OPTIONS POPOVER (REPLACES HEAVY FIXED FILTER BAR) -->
+      <div class="dropdown-wrap">
+        <button class="btn ghost" id="btnViewMenu" aria-haspopup="menu" aria-expanded="false" title="Opções de visualização, Auto-Layout, filtros de área e estilo IEEE">
+          <svg viewBox="0 0 18 18" fill="none" class="btn-ico"><path d="M2.5 5.5H15.5M4.5 9H13.5M6.8 12.5H11.2" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+          <span class="lbl-md">Visual</span>
+          <span class="caret" aria-hidden="true">▾</span>
+        </button>
+        <div class="dropdown-menu view-popover" id="viewMenu" role="menu" aria-label="Opções de visualização e layout">
+          <div class="popover-section-title">Layout &amp; Geometria</div>
+          <div class="popover-action-row">
+            <button class="btn sm" id="btnAutoLayout" title="Reorganizar layout topológico determinístico">Auto-Layout</button>
+            <button class="btn sm" id="btnFitView" title="Centralizar e ajustar zoom para todo o diagrama">Ajustar Zoom</button>
+            <button class="btn sm" id="btnRoundTrip" title="Auditar equivalência determinística MRY ↔ AST">Ida-e-Volta</button>
+          </div>
+          <div class="menu-sep"></div>
+          <div class="popover-section-title">Camadas do Diagrama</div>
+          <label class="popover-check">
+            <input type="checkbox" id="chkShowMeta" checked />
+            <span>Exibir tipos de servidor (∞/1), delays e guards</span>
+          </label>
+          <label class="popover-check">
+            <input type="checkbox" id="chkGravity" checked />
+            <span>Física de fronteira e desvio automático de linhas</span>
+          </label>
+          <label class="popover-check" id="lblMirrors">
+            <input type="checkbox" id="chkMirrors" />
+            <span>Projetar espelhos de lugares e transições (↗)</span>
+          </label>
+          <label class="popover-check">
+            <input type="checkbox" id="chkIeeeMode" />
+            <span>Modo publicação monocromático (IEEE / Overleaf)</span>
+          </label>
+          <div class="popover-field">
+            <label for="arcLabelMode">Pesos condicionais IF(...):</label>
+            <select id="arcLabelMode" class="compact-select">
+              <option value="tag">Tags compactas (w₁..wₙ) + Legenda</option>
+              <option value="summary">Resumo inline nos arcos</option>
+              <option value="full">Expressão completa inline</option>
+            </select>
+          </div>
+          <div class="menu-sep"></div>
+          <div class="popover-section-title">Foco por Área / Submodelo</div>
+          <div id="branchChips" class="chip-strip"></div>
+        </div>
+      </div>
+
+      <!-- LIVE COLLABORATIVE EDITING POPOVER (WEBRTC P2P + BROADCASTCHANNEL) -->
+      <div class="dropdown-wrap">
+        <button class="btn ghost" id="btnCollabMenu" aria-haspopup="menu" aria-expanded="false" title="Edição colaborativa em tempo real (cursores + código + layout)">
+          <span class="collab-dot" id="collabDot"></span>
+          <span class="lbl-md" id="collabBtnLabel">Colaborar</span>
+        </button>
+        <div class="dropdown-menu collab-popover" id="collabMenu" role="menu" aria-label="Sessão de edição colaborativa">
+          <div class="popover-section-title">Colaboração em Tempo Real (P2P)</div>
+          <p class="popover-hint">Sincroniza código, layout, pontos de inflexão, espelhos, cursores e Token Game entre abas locais e colegas remotos via WebRTC.</p>
+          <div class="popover-field">
+            <label for="inpCollabName">Seu nome no cursor</label>
+            <input type="text" id="inpCollabName" placeholder="Ex.: Dário" maxlength="24" />
+          </div>
+          <div class="popover-field">
+            <label for="inpCollabRoom">Código da sala</label>
+            <div style="display:flex;gap:5px;">
+              <input type="text" id="inpCollabRoom" placeholder="Ex.: modcs-spn" maxlength="36" style="flex:1;font-family:var(--font-mono);" />
+              <button class="btn sm primary" id="btnCollabToggle">Conectar</button>
+            </div>
+          </div>
+          <div class="collab-status-row" id="collabStatusRow">
+            <span id="collabStatusText">Offline (sessão individual)</span>
+          </div>
+          <button class="btn sm" id="btnCollabCopyLink" style="width:100%;margin-top:4px;display:none;">Copiar Link de Convite</button>
+        </div>
+      </div>
+
+      <button class="btn ghost" id="btnSplitModel" aria-pressed="false" title="Dividir a tela para abrir outro editor lado a lado (como Split Editor do VS Code)">
+        <svg viewBox="0 0 18 18" fill="none" class="btn-ico"><rect x="2.2" y="3.2" width="13.6" height="11.6" rx="1.8" stroke="currentColor" stroke-width="1.5"/><path d="M9 3.2V14.8" stroke="currentColor" stroke-width="1.5"/></svg>
+        <span class="lbl-md">Split</span>
       </button>
 
       <div class="dropdown-wrap">
-        <button class="btn primary" id="btnExportMenu" aria-haspopup="menu" aria-expanded="false" title="Exportar .mry, SVG, PNG ou gerenciar memória">
-          <svg viewBox="0 0 20 20" fill="none" class="btn-ico"><path d="M10 3.5V12.5M10 12.5L6.5 9M10 12.5L13.5 9M4 14.5V15.5C4 16.1 4.4 16.5 5 16.5H15C15.6 16.5 16 16.1 16 15.5V14.5" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        <button class="btn primary" id="btnExportMenu" aria-haspopup="menu" aria-expanded="false" title="Exportar arquivo .mry, SVG vetorial ou PNG">
+          <svg viewBox="0 0 18 18" fill="none" class="btn-ico"><path d="M9 3V11.2M9 11.2L5.8 8M9 11.2L12.2 8M3.5 13.2V14.2C3.5 14.7 3.9 15.1 4.4 15.1H13.6C14.1 15.1 14.5 14.7 14.5 14.2V13.2" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
           <span class="lbl-sm">Exportar</span>
           <span class="caret" aria-hidden="true">▾</span>
         </button>
@@ -55,238 +160,224 @@
           </button>
           <div class="menu-sep" id="resetMenuSep" style="display:none;"></div>
           <button class="menu-item danger" id="btnResetMemory" role="menuitem" style="display:none;">
-            <strong>↺ Resetar autosave</strong>
+            <strong>Resetar alterações salvas</strong>
             <span>Restaura versão original deste modelo</span>
           </button>
         </div>
       </div>
 
-      <button class="btn" id="btnToggleCode" aria-pressed="true" title="Mostrar ou esconder editor de código .mry">
-        <svg viewBox="0 0 20 20" fill="none" class="btn-ico"><path d="M7 6.5L3.5 10L7 13.5M13 6.5L16.5 10L13 13.5M11 4.5L9 15.5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
-        <span class="lbl-md">Código</span>
-      </button>
-
-      <button class="btn" id="btnFocusCanvas" aria-pressed="false" title="Focar 100% no grid/diagrama (esconde Código e Inspetor) [F]">
-        <svg viewBox="0 0 20 20" fill="none" class="btn-ico"><path d="M3.5 7.5V4.5C3.5 3.9 3.9 3.5 4.5 3.5H7.5M12.5 3.5H15.5C16.1 3.5 16.5 3.9 16.5 4.5V7.5M16.5 12.5V15.5C16.5 16.1 16.1 16.5 15.5 16.5H12.5M7.5 16.5H4.5C3.9 16.5 3.5 16.1 3.5 15.5V12.5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
-        <span class="lbl-md">Focar Grid</span>
-      </button>
-
-      <button class="btn" id="btnSplitModel" aria-pressed="false" title="Trabalhar em 2 modelos simultaneamente lado a lado">
-        <svg viewBox="0 0 20 20" fill="none" class="btn-ico"><rect x="2.8" y="4" width="14.4" height="12" rx="2" stroke="currentColor" stroke-width="1.6"/><path d="M10 4V16" stroke="currentColor" stroke-width="1.6"/></svg>
-        <span class="lbl-md">2 Modelos</span>
-      </button>
-
-      <button class="btn" id="btnToggleInspector" aria-pressed="true" title="Mostrar ou esconder painel Inspetor / Auditoria">
-        <svg viewBox="0 0 20 20" fill="none" class="btn-ico"><rect x="3" y="4" width="14" height="12" rx="2" stroke="currentColor" stroke-width="1.6"/><path d="M12 4V16" stroke="currentColor" stroke-width="1.6"/></svg>
-        <span class="lbl-md">Inspetor</span>
-      </button>
-
-      <button class="btn danger" id="btnCloseEmbeddedSplit" style="display:none;" title="Fechar segundo modelo">✕</button>
+      <button class="btn ghost danger-text" id="btnCloseEmbeddedSplit" style="display:none;" title="Fechar este painel de editor dividido">✕</button>
     </div>
   </header>
 
   <div class="app-shell" id="appShell">
-  <main class="workspace" id="workspace">
-    <!-- MOBILE/TABLET DRAWER BACKDROP -->
-    <div class="drawer-backdrop" id="drawerBackdrop" aria-hidden="true"></div>
-
-    <!-- LEFT (DRAWER ON MOBILE/TABLET): MRY SOURCE CODE -->
-    <aside class="pane pane-code" id="paneCode" aria-label="Editor de código Mercury">
-      <div class="pane-header">
-        <span>Código Mercury (.mry)</span>
-        <div class="pane-header-actions">
-          <button class="btn sm hide-mobile" id="btnWideCode" title="Expandir ou reduzir largura do painel de código">⬌</button>
-          <button class="btn sm" id="btnFormatMry" title="Regerar código formatado a partir da AST">Formatar</button>
-          <button class="btn sm" id="btnCopyMry" title="Copiar .mry para a área de transferência">Copiar</button>
-          <button class="btn sm" id="btnCollapseCode" aria-label="Fechar editor de código" title="Esconder painel de código">✕</button>
-        </div>
-      </div>
-      <div class="code-editor-wrap">
-        <div class="code-stage">
-          <div class="code-gutter" id="mryGutter" aria-hidden="true"></div>
-          <div class="code-surface">
-            <pre id="mryHighlight" aria-hidden="true"></pre>
-            <textarea id="mryEditor" aria-label="Código fonte MRY" spellcheck="false" autocomplete="off" autocorrect="off" autocapitalize="off"></textarea>
+    <main class="workspace" id="workspace">
+      <!-- VS CODE STYLE EMPTY EDITOR WELCOME SCREEN (SHOWN WHEN NO FILE IS OPEN IN THIS PANE) -->
+      <section class="empty-editor-state" id="emptyEditorState" style="display:none;" aria-label="Editor vazio">
+        <div class="empty-editor-card">
+          <div class="empty-watermark" aria-hidden="true">
+            <svg viewBox="0 0 64 64" fill="none">
+              <circle cx="18" cy="32" r="10" stroke="currentColor" stroke-width="2.5"/>
+              <rect x="42" y="16" width="10" height="32" rx="2.5" stroke="currentColor" stroke-width="2.5"/>
+              <path d="M28 32H42" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"/>
+            </svg>
           </div>
-        </div>
-        <div class="parse-status ok" id="parseStatus" role="status" aria-live="polite">
-          <span id="parseStatusText">Sincronizado</span>
-          <span id="parseStatsMini"></span>
-        </div>
-      </div>
-    </aside>
+          <h2 class="empty-title">Nenhum modelo aberto neste editor</h2>
+          <p class="empty-subtitle">Clique na área abaixo para abrir um arquivo <code>.mry</code> do computador ou inicie um modelo em branco.</p>
 
-    <!-- DRAGGABLE SPLITTER: CODE <-> CANVAS -->
-    <div class="pane-splitter splitter-code" id="splitterCode" role="separator" aria-orientation="vertical" aria-label="Redimensionar painel de código" title="Arraste para redimensionar • Duplo-clique para restaurar padrão"></div>
-
-    <!-- CENTER (ALWAYS FULL CANVAS ON MOBILE): INTERACTIVE SPN/RBD STAGE -->
-    <section class="pane pane-canvas" aria-label="Canvas visual do modelo">
-      <div class="filter-bar" role="toolbar" aria-label="Filtros e visualização">
-        <span class="filter-label">Foco:</span>
-        <div id="branchChips" class="chip-strip"></div>
-        <div class="toolbar-sep" aria-hidden="true"></div>
-        <label class="toggle-label" title="Exibe [∞] / [1], guards, prioridades e valores resolvidos nos nós">
-          <input type="checkbox" id="chkShowMeta" checked /> Guards
-        </label>
-        <label class="toggle-label" title="Gravidade negativa: desvia setas de nós e afasta linhas próximas">
-          <input type="checkbox" id="chkGravity" checked /> Desvio
-        </label>
-        <label class="toggle-label" id="lblMirrors" title="Substitui arcos longos por Lugares-Espelho compactos (↗) — sem alterar o .mry">
-          <input type="checkbox" id="chkMirrors" /> 🔗 Espelhos
-        </label>
-        <label class="toggle-label" title="Estilo preto e branco pronto para publicação IEEE/Overleaf">
-          <input type="checkbox" id="chkIeeeMode" /> IEEE P&amp;B
-        </label>
-        <select id="arcLabelMode" aria-label="Modo de rótulo de arcos condicionais" title="Como exibir pesos condicionais IF(...) nos arcos" class="compact-select">
-          <option value="tag">IF: w₁..wₙ + Legenda</option>
-          <option value="summary">IF: Resumo inline</option>
-          <option value="full">IF: Completo inline</option>
-        </select>
-        <div class="filter-actions">
-          <button class="btn sm" id="btnAutoLayout" title="Reorganizar layout determinístico simétrico">Auto-Layout</button>
-          <button class="btn sm" id="btnFitView" title="Ajustar zoom para caber todo o modelo">Ajustar</button>
-          <button class="btn sm" id="btnRoundTrip" title="Testar integridade determinística MRY → AST → MRY">Ida-e-Volta</button>
-        </div>
-      </div>
-
-      <div class="svg-stage" id="svgStage">
-        <svg id="spnSvg" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Diagrama do modelo Mercury"></svg>
-        <div class="canvas-hint" id="canvasHint">
-          Arraste no vazio: selecionar em caixa • Espaço/Botão meio: Pan • Clique rápido: conectar • Segurar: mover
-        </div>
-        <div class="canvas-legend-overlay" id="legendOverlay" style="display:none;"></div>
-
-        <!-- CONTEXTUAL MULTI-SELECTION FLOATING BAR -->
-        <div class="selection-action-bar" id="selectionActionBar" role="toolbar" aria-label="Ações de seleção múltipla">
-          <span class="sel-count" id="selActionCount">0 selecionados</span>
-          <button class="btn sm primary" id="btnFloatNewZone" title="Agrupar os itens selecionados em uma nova Área">⬚ Área</button>
-          <button class="btn sm" id="btnFloatClone" title="Duplicar bloco selecionado + arcos internos">⧉ Duplicar</button>
-          <button class="btn sm" id="btnFloatAlignY" title="Alinhar horizontalmente no mesmo eixo Y">⋯ H</button>
-          <button class="btn sm" id="btnFloatAlignX" title="Alinhar verticalmente no mesmo eixo X">⫶ V</button>
-          <button class="btn sm danger" id="btnFloatDelete" title="Apagar todos os itens selecionados (Del)">🗑 Apagar</button>
-        </div>
-
-        <!-- TOKEN GAME FLOATING SIMULATION BAR -->
-        <div class="sim-action-bar" id="simActionBar" role="toolbar" aria-label="Controles do Token Game">
-          <span class="sim-pill" id="simStepBadge">🎮 #0</span>
-          <span class="sim-status" id="simEnabledBadge">0 habilitadas</span>
-          <button class="btn sm sim-primary" id="btnSimStep" title="Disparar uma transição habilitada aleatoriamente">🎲 Passo</button>
-          <button class="btn sm" id="btnSimStep5" title="Executar 5 disparos válidos em sequência">⏩ ×5</button>
-          <button class="btn sm" id="btnSimBack" title="Desfazer último disparo">↶</button>
-          <button class="btn sm" id="btnSimReset" title="Reiniciar marcação inicial M₀">↺ M₀</button>
-          <label class="toggle-label" title="Prioridade estrita para transições imediatas (semântica GSPN/Mercury)" style="background:rgba(15,23,42,0.55);padding:3px 6px;">
-            <input type="checkbox" id="chkSimImmPrio" checked /> Imed.
-          </label>
-          <button class="btn sm danger" id="btnSimExit" title="Sair do modo Simulação (Esc)">✕</button>
-        </div>
-
-        <!-- FIGMA-STYLE FLOATING TOOL DOCK (TOUCH-SCROLLABLE ON MOBILE) -->
-        <div class="figma-dock" id="figmaDock" role="toolbar" aria-label="Ferramentas de edição">
-          <div id="spnToolbar" class="dock-segment">
-            <div class="tool-group" title="Modo principal: segurar para mover; clique rápido para conectar; arrastar no vazio para selecionar">
-              <button class="icon-btn active" data-tool="select" aria-label="Selecionar" title="Selecionar / Mover / Conectar [V]">
-                <svg viewBox="0 0 20 20" fill="none"><path d="M4.5 3.5L15.5 10L10.2 11.4L8.5 16.5L4.5 3.5Z" fill="currentColor" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/></svg>
-              </button>
+          <button class="empty-dropzone" id="btnEmptyOpenCenter" type="button" title="Clique para selecionar um arquivo .mry do computador">
+            <svg viewBox="0 0 24 24" fill="none" class="dropzone-ico">
+              <path d="M4 7.5C4 6.4 4.9 5.5 6 5.5H10.2L12.2 7.6H18C19.1 7.6 20 8.5 20 9.6V16.8C20 17.9 19.1 18.8 18 18.8H6C4.9 18.8 4 17.9 4 16.8V7.5Z" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/>
+              <path d="M12 10.8V15.8M9.5 13.3H14.5" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/>
+            </svg>
+            <div class="dropzone-text">
+              <strong>Abrir Arquivo .mry do Computador</strong>
+              <span>Clique aqui ou arraste e solte um arquivo Mercury (.mry)</span>
             </div>
+          </button>
 
-            <div class="tool-group">
-              <button class="icon-btn" data-tool="addPlace" title="Adicionar Lugar (Place) [P]">
-                <svg viewBox="0 0 20 20" fill="none"><circle cx="10" cy="10" r="6.8" fill="#ffffff" stroke="currentColor" stroke-width="2"/></svg>
-                <span>Lugar</span>
-              </button>
-              <button class="icon-btn" data-tool="addExp" title="Adicionar Transição Exponencial [E]">
-                <svg viewBox="0 0 20 20" fill="none"><rect x="6.5" y="3" width="7" height="14" rx="1" fill="#ffffff" stroke="currentColor" stroke-width="1.8"/></svg>
-                <span>Exp</span>
-              </button>
-              <button class="icon-btn" data-tool="addDet" title="Adicionar Transição Determinística [D]">
-                <svg viewBox="0 0 20 20" fill="none"><rect x="6.5" y="3" width="7" height="14" rx="1" fill="currentColor" stroke="currentColor" stroke-width="1.4"/></svg>
-                <span>Det</span>
-              </button>
-              <button class="icon-btn" data-tool="addImm" title="Adicionar Transição Imediata [I]">
-                <svg viewBox="0 0 20 20" fill="none"><rect x="8.3" y="3" width="3.4" height="14" rx="0.6" fill="currentColor"/></svg>
-                <span>Imed</span>
-              </button>
-              <button class="icon-btn" id="btnAddZone" title="Criar nova Área visual editável">
-                <svg viewBox="0 0 20 20" fill="none"><rect x="2.5" y="4" width="15" height="12" rx="2.5" stroke="currentColor" stroke-width="1.6" stroke-dasharray="3 2"/></svg>
-                <span>Área</span>
-              </button>
-            </div>
-
-            <div class="tool-group" title="Conector ativo ao dar clique rápido em um nó (Tab alterna)">
-              <button class="icon-btn active" id="btnConnNormal" data-connector="normal" title="Arco Normal (Entrada / Saída) [Tab]">
-                <svg viewBox="0 0 20 20" fill="none"><path d="M3 14.5L15 5.5" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"/><path d="M10.5 4.8L16.2 4.8L14.3 10.1" fill="currentColor"/></svg>
-                <span>Arco</span>
-              </button>
-              <button class="icon-btn" id="btnConnInhibitor" data-connector="inhibitor" title="Arco Inibidor (Lugar ○→ Transição) [Tab]">
-                <svg viewBox="0 0 20 20" fill="none"><path d="M3 14.5L12.6 7.3" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"/><circle cx="15" cy="5.5" r="2.7" fill="#0f172a" stroke="currentColor" stroke-width="1.9"/></svg>
-                <span>Inibidor</span>
-              </button>
-            </div>
-
-            <div class="tool-group">
-              <button class="icon-btn danger" data-tool="delete" aria-label="Apagar" title="Apagar selecionado ou clicar para apagar [Del]">
-                <svg viewBox="0 0 20 20" fill="none"><path d="M4.5 6H15.5M7.5 6V4.5C7.5 4 8 3.5 8.5 3.5H11.5C12 3.5 12.5 4 12.5 4.5V6M6.5 6L7.2 15.8C7.2 16.3 7.6 16.7 8.1 16.7H11.9C12.4 16.7 12.8 16.3 12.8 15.8L13.5 6" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
-              </button>
-            </div>
-
-            <div class="tool-group" title="Token Game: simule disparos passo a passo, guards, arcos IF(...) e conservação">
-              <button class="icon-btn" id="btnToggleSim" title="Modo Token Game (Simular disparos) [S]">
-                <svg viewBox="0 0 20 20" fill="none"><path d="M5.5 4.2L15.8 10L5.5 15.8V4.2Z" fill="currentColor" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/></svg>
-                <span>Simular</span>
-              </button>
-            </div>
+          <div class="empty-quick-actions">
+            <button class="btn" id="btnEmptyNewSpn" type="button">+ Novo Modelo SPN</button>
+            <button class="btn" id="btnEmptyNewRbd" type="button">+ Novo Modelo RBD</button>
           </div>
 
-          <div id="rbdToolbar" class="dock-segment" style="display:none;">
-            <div class="tool-group">
-              <button class="icon-btn" id="btnRbdAddBlock" title="Adicionar componente exponencial (MTTF/MTTR)"><span>+ Bloco</span></button>
-              <button class="icon-btn" id="btnRbdAddHier" title="Adicionar bloco hierárquico (R/A)"><span>+ Hier.</span></button>
-              <button class="icon-btn" id="btnRbdAddSeries" title="Criar grupo Série"><span>+ Série</span></button>
-              <button class="icon-btn" id="btnRbdAddParallel" title="Criar grupo Paralelo"><span>+ Paralelo</span></button>
-              <button class="icon-btn" id="btnRbdAddKooN" title="Criar grupo k-de-N"><span>+ k-de-N</span></button>
+          <div class="empty-recent-block">
+            <div class="empty-recent-head">Modelos da Literatura &amp; Memória Local</div>
+            <div class="empty-recent-list" id="emptyRecentList"></div>
+          </div>
+        </div>
+      </section>
+
+      <!-- MOBILE/TABLET DRAWER BACKDROP -->
+      <div class="drawer-backdrop" id="drawerBackdrop" aria-hidden="true"></div>
+
+      <!-- LEFT: MRY SOURCE CODE (VS CODE ZEN EDITOR) -->
+      <aside class="pane pane-code" id="paneCode" aria-label="Editor de código Mercury">
+        <div class="pane-header">
+          <span class="pane-title-mono">CÓDIGO MERCURY (.MRY)</span>
+          <div class="pane-header-actions">
+            <button class="btn sm ghost hide-mobile" id="btnWideCode" title="Alternar largura estendida do editor">⬌</button>
+            <button class="btn sm ghost" id="btnFormatMry" title="Formatar código deterministicamente a partir da AST">Formatar</button>
+            <button class="btn sm ghost" id="btnCopyMry" title="Copiar código .mry">Copiar</button>
+            <button class="btn sm ghost" id="btnCollapseCode" aria-label="Esconder painel de código" title="Esconder painel de código">✕</button>
+          </div>
+        </div>
+        <div class="code-editor-wrap">
+          <div class="code-stage">
+            <div class="code-gutter" id="mryGutter" aria-hidden="true"></div>
+            <div class="code-surface">
+              <pre id="mryHighlight" aria-hidden="true"></pre>
+              <textarea id="mryEditor" aria-label="Código fonte MRY" spellcheck="false" autocomplete="off" autocorrect="off" autocapitalize="off"></textarea>
             </div>
-            <label class="toggle-label" title="Duração da missão t para avaliar Confiabilidade R(t) = P(T > t)" style="background:rgba(30,41,59,0.85);padding:4px 8px;">
-              t (h):
-              <input type="number" id="inpMissionTime" value="8" min="0" step="1" style="width:58px;padding:2px 5px;font-size:11px;" />
+          </div>
+          <div class="parse-status ok" id="parseStatus" role="status" aria-live="polite">
+            <span id="parseStatusText">Sincronizado</span>
+            <span id="parseStatsMini"></span>
+          </div>
+        </div>
+      </aside>
+
+      <!-- DRAGGABLE SPLITTER: CODE <-> CANVAS -->
+      <div class="pane-splitter splitter-code" id="splitterCode" role="separator" aria-orientation="vertical" aria-label="Redimensionar painel de código" title="Arraste para redimensionar • Duplo-clique para restaurar"></div>
+
+      <!-- CENTER: INTERACTIVE FIGMA-STYLE SPN/RBD CANVAS -->
+      <section class="pane pane-canvas" aria-label="Canvas visual do modelo">
+        <div class="svg-stage" id="svgStage">
+          <svg id="spnSvg" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Diagrama editável do modelo Mercury"></svg>
+          <div class="canvas-hint" id="canvasHint">
+            Arraste no vazio: seleção em caixa • Duplo-clique numa seta: criar ponto de inflexão • Espaço: Pan
+          </div>
+          <div class="canvas-legend-overlay" id="legendOverlay" style="display:none;"></div>
+
+          <!-- CONTEXTUAL MULTI-SELECTION FLOATING BAR -->
+          <div class="selection-action-bar" id="selectionActionBar" role="toolbar" aria-label="Ações de seleção múltipla">
+            <span class="sel-count" id="selActionCount">0 selecionados</span>
+            <button class="btn sm primary" id="btnFloatNewZone" title="Agrupar selecionados em uma Área">⬚ Área</button>
+            <button class="btn sm" id="btnFloatClone" title="Duplicar bloco selecionado + arcos internos">⧉ Duplicar</button>
+            <button class="btn sm" id="btnFloatAlignY" title="Alinhar horizontalmente">⋯ H</button>
+            <button class="btn sm" id="btnFloatAlignX" title="Alinhar verticalmente">⫶ V</button>
+            <button class="btn sm danger" id="btnFloatDelete" title="Apagar selecionados (Del)">Apagar</button>
+          </div>
+
+          <!-- TOKEN GAME FLOATING SIMULATION BAR -->
+          <div class="sim-action-bar" id="simActionBar" role="toolbar" aria-label="Controles do Play Mode (Token Game)">
+            <span class="sim-pill" id="simStepBadge">Passo #0</span>
+            <span class="sim-status" id="simEnabledBadge">0 habilitadas</span>
+            <button class="btn sm sim-primary" id="btnSimStep" title="Disparar uma transição habilitada aleatoriamente">Passo</button>
+            <button class="btn sm" id="btnSimStep5" title="Executar 5 disparos em sequência">×5</button>
+            <button class="btn sm" id="btnSimBack" title="Desfazer último disparo">↶</button>
+            <button class="btn sm" id="btnSimReset" title="Reiniciar marcação inicial M₀">↺ M₀</button>
+            <label class="toggle-label" title="Prioridade estrita para transições imediatas (semântica GSPN/Mercury)">
+              <input type="checkbox" id="chkSimImmPrio" checked /> Imed.
             </label>
+            <button class="btn sm danger" id="btnSimExit" title="Sair do Play Mode (Esc)">✕</button>
           </div>
 
-          <div class="tool-group">
-            <button class="icon-btn" id="btnUndo" aria-label="Desfazer" title="Desfazer última ação (Ctrl+Z)" disabled>
-              <svg viewBox="0 0 20 20" fill="none"><path d="M7.5 6.5L3.8 10L7.5 13.5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/><path d="M4.2 10H12.2C14.6 10 16.5 11.7 16.5 13.8C16.5 15.1 15.6 16.2 14.2 16.5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
-            </button>
-            <button class="icon-btn" id="btnRedo" aria-label="Refazer" title="Refazer ação desfeita (Ctrl+Y / Ctrl+Shift+Z)" disabled>
-              <svg viewBox="0 0 20 20" fill="none"><path d="M12.5 6.5L16.2 10L12.5 13.5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/><path d="M15.8 10H7.8C5.4 10 3.5 11.7 3.5 13.8C3.5 15.1 4.4 16.2 5.8 16.5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
-            </button>
+          <!-- MINIMALIST FIGMA FLOATING BOTTOM TOOL DOCK -->
+          <div class="figma-dock" id="figmaDock" role="toolbar" aria-label="Ferramentas de modelagem">
+            <div id="spnToolbar" class="dock-segment">
+              <div class="tool-group">
+                <button class="icon-btn active" data-tool="select" aria-label="Selecionar" title="Selecionar / Mover / Conectar [V]">
+                  <svg viewBox="0 0 20 20" fill="none"><path d="M5 3.5L15.2 9.8L10.3 11.2L8.6 16.2L5 3.5Z" fill="currentColor" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/></svg>
+                </button>
+              </div>
+
+              <div class="tool-group">
+                <button class="icon-btn" data-tool="addPlace" title="Adicionar Lugar (Place) [P]">
+                  <svg viewBox="0 0 20 20" fill="none"><circle cx="10" cy="10" r="6.2" stroke="currentColor" stroke-width="1.8"/></svg>
+                  <span>Place</span>
+                </button>
+                <button class="icon-btn" data-tool="addExp" title="Adicionar Transição Exponencial [E]">
+                  <svg viewBox="0 0 20 20" fill="none"><rect x="6.8" y="3.5" width="6.4" height="13" rx="1" stroke="currentColor" stroke-width="1.7"/></svg>
+                  <span>EXP</span>
+                </button>
+                <button class="icon-btn" data-tool="addDet" title="Adicionar Transição Determinística [D]">
+                  <svg viewBox="0 0 20 20" fill="none"><rect x="6.8" y="3.5" width="6.4" height="13" rx="1" fill="currentColor"/></svg>
+                  <span>DET</span>
+                </button>
+                <button class="icon-btn" data-tool="addImm" title="Adicionar Transição Imediata [I]">
+                  <svg viewBox="0 0 20 20" fill="none"><rect x="8.5" y="3.5" width="3" height="13" rx="0.6" fill="currentColor"/></svg>
+                  <span>IMM</span>
+                </button>
+                <button class="icon-btn" id="btnAddZone" title="Criar Área visual editável">
+                  <svg viewBox="0 0 20 20" fill="none"><rect x="3" y="4.5" width="14" height="11" rx="2" stroke="currentColor" stroke-width="1.5" stroke-dasharray="2.5 2"/></svg>
+                  <span>Área</span>
+                </button>
+              </div>
+
+              <div class="tool-group" title="Tipo de arco ao conectar nós (Tab alterna)">
+                <button class="icon-btn active" id="btnConnNormal" data-connector="normal" title="Arco Normal (Entrada / Saída) [Tab]">
+                  <svg viewBox="0 0 20 20" fill="none"><path d="M3.5 14L14.8 5.8" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/><path d="M10.8 5.2L16 5.2L14.2 10" fill="currentColor"/></svg>
+                </button>
+                <button class="icon-btn" id="btnConnInhibitor" data-connector="inhibitor" title="Arco Inibidor (Lugar ○→ Transição) [Tab]">
+                  <svg viewBox="0 0 20 20" fill="none"><path d="M3.5 14L12.5 7.4" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/><circle cx="14.8" cy="5.6" r="2.4" stroke="currentColor" stroke-width="1.7"/></svg>
+                </button>
+              </div>
+
+              <div class="tool-group">
+                <button class="icon-btn danger" data-tool="delete" aria-label="Apagar" title="Apagar elemento selecionado [Del]">
+                  <svg viewBox="0 0 20 20" fill="none"><path d="M4.8 6H15.2M7.6 6V4.6C7.6 4.1 8 3.7 8.5 3.7H11.5C12 3.7 12.4 4.1 12.4 4.6V6M6.6 6L7.2 15.6C7.2 16.1 7.6 16.5 8.1 16.5H11.9C12.4 16.5 12.8 16.1 12.8 15.6L13.4 6" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                </button>
+              </div>
+
+              <div class="tool-group">
+                <button class="icon-btn" id="btnToggleSim" title="Play Mode (Token Game com transições habilitadas piscando estilo Mercury) [S]">
+                  <svg viewBox="0 0 20 20" fill="none"><path d="M6 4.5L15.5 10L6 15.5V4.5Z" fill="currentColor"/></svg>
+                  <span>Play</span>
+                </button>
+              </div>
+            </div>
+
+            <div id="rbdToolbar" class="dock-segment" style="display:none;">
+              <div class="tool-group">
+                <button class="icon-btn" id="btnRbdAddBlock" title="Adicionar bloco exponencial (MTTF/MTTR)"><span>+ Bloco</span></button>
+                <button class="icon-btn" id="btnRbdAddHier" title="Adicionar bloco hierárquico (R/A)"><span>+ Hier</span></button>
+                <button class="icon-btn" id="btnRbdAddSeries" title="Criar grupo Série"><span>+ Série</span></button>
+                <button class="icon-btn" id="btnRbdAddParallel" title="Criar grupo Paralelo"><span>+ Paralelo</span></button>
+                <button class="icon-btn" id="btnRbdAddKooN" title="Criar grupo k-de-N"><span>+ kooN</span></button>
+              </div>
+              <label class="toggle-label" title="Tempo de missão t (horas) para cálculo de R(t)">
+                t(h):
+                <input type="number" id="inpMissionTime" value="8" min="0" step="1" style="width:52px;padding:2px 5px;font-size:11px;" />
+              </label>
+            </div>
+
+            <div class="tool-group">
+              <button class="icon-btn" id="btnUndo" aria-label="Desfazer" title="Desfazer (Ctrl+Z)" disabled>
+                <svg viewBox="0 0 20 20" fill="none"><path d="M7.5 6.8L4 10L7.5 13.2" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/><path d="M4.4 10H12C14.3 10 16 11.6 16 13.6C16 14.8 15.2 15.8 13.8 16.2" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
+              </button>
+              <button class="icon-btn" id="btnRedo" aria-label="Refazer" title="Refazer (Ctrl+Y)" disabled>
+                <svg viewBox="0 0 20 20" fill="none"><path d="M12.5 6.8L16 10L12.5 13.2" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/><path d="M15.6 10H8C5.7 10 4 11.6 4 13.6C4 14.8 4.8 15.8 6.2 16.2" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
+              </button>
+            </div>
           </div>
         </div>
-      </div>
+      </section>
+
+      <!-- DRAGGABLE SPLITTER: CANVAS <-> INSPECTOR -->
+      <div class="pane-splitter splitter-inspector" id="splitterInspector" role="separator" aria-orientation="vertical" aria-label="Redimensionar painel inspetor" title="Arraste para redimensionar • Duplo-clique para restaurar"></div>
+
+      <!-- RIGHT: INSPECTOR, MANIFEST, PARAMS & AUDIT -->
+      <aside class="pane pane-inspector" id="paneInspector" aria-label="Inspetor de propriedades">
+        <div class="sheet-handle-bar">
+          <span class="sheet-pill" aria-hidden="true"></span>
+          <button class="btn sm ghost sheet-close" id="btnCloseInspector" aria-label="Fechar inspetor" title="Fechar inspetor">✕</button>
+        </div>
+        <div class="tabs" role="tablist" aria-label="Abas do inspetor">
+          <button class="tab-btn active" role="tab" aria-selected="true" data-tab="inspector">Propriedades</button>
+          <button class="tab-btn" role="tab" aria-selected="false" data-tab="manifest">Elementos</button>
+          <button class="tab-btn" role="tab" aria-selected="false" data-tab="params">Parâmetros</button>
+          <button class="tab-btn" role="tab" aria-selected="false" data-tab="audit">Auditoria</button>
+        </div>
+        <div class="tab-body" id="tabBody"></div>
+      </aside>
+    </main>
+
+    <!-- DRAGGABLE SPLITTER & SECONDARY INDEPENDENT EDITOR (VS CODE SPLIT EDITOR) -->
+    <div class="split-divider" id="splitterSplit" role="separator" aria-orientation="vertical" aria-label="Redimensionar divisão entre editores" title="Arraste para ajustar proporção entre os editores • Duplo-clique para 50/50"></div>
+    <section class="split-secondary" id="splitSecondary" aria-label="Segundo editor dividido">
+      <iframe id="splitFrame" title="MRY Studio — Editor Dividido"></iframe>
     </section>
-
-    <!-- DRAGGABLE SPLITTER: CANVAS <-> INSPECTOR -->
-    <div class="pane-splitter splitter-inspector" id="splitterInspector" role="separator" aria-orientation="vertical" aria-label="Redimensionar painel inspetor" title="Arraste para redimensionar • Duplo-clique para restaurar padrão"></div>
-
-    <!-- RIGHT (BOTTOM SHEET ON MOBILE, DRAWER ON TABLET): INSPECTOR, MANIFEST, PARAMS & AUDIT -->
-    <aside class="pane pane-inspector" id="paneInspector" aria-label="Inspetor e auditoria">
-      <div class="sheet-handle-bar">
-        <span class="sheet-pill" aria-hidden="true"></span>
-        <button class="btn sm sheet-close" id="btnCloseInspector" aria-label="Fechar painel inspetor" title="Fechar painel">✕</button>
-      </div>
-      <div class="tabs" role="tablist" aria-label="Abas do inspetor">
-        <button class="tab-btn active" role="tab" aria-selected="true" data-tab="inspector">Inspetor</button>
-        <button class="tab-btn" role="tab" aria-selected="false" data-tab="manifest">Manifesto</button>
-        <button class="tab-btn" role="tab" aria-selected="false" data-tab="params">Parâmetros</button>
-        <button class="tab-btn" role="tab" aria-selected="false" data-tab="audit">Auditoria</button>
-      </div>
-      <div class="tab-body" id="tabBody"></div>
-    </aside>
-  </main>
-
-  <!-- DRAGGABLE SPLITTER & SECONDARY INDEPENDENT WORKSPACE (2 MODELS SIMULTANEOUSLY) -->
-  <div class="split-divider" id="splitterSplit" role="separator" aria-orientation="vertical" aria-label="Redimensionar divisão entre os 2 modelos" title="Arraste para ajustar proporção entre os 2 modelos • Duplo-clique para 50/50"></div>
-  <section class="split-secondary" id="splitSecondary" aria-label="Segundo modelo simultâneo">
-    <iframe id="splitFrame" title="MRY Visual Studio — Modelo 2"></iframe>
-  </section>
   </div>
 
   <div id="svgTooltip" role="tooltip"></div>

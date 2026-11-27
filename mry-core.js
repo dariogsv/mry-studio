@@ -1855,8 +1855,8 @@
     return out;
   }
 
-  function tautRoundedPath(rawPts, maxR = 20) {
-    const pts = simplifyPolyline(rawPts, 4.5);
+  function tautRoundedPath(rawPts, maxR = 20, preserveInterior = false) {
+    const pts = preserveInterior ? rawPts : simplifyPolyline(rawPts, 4.5);
     if (pts.length < 2) return "";
     if (pts.length === 2) {
       return `M ${pts[0].x.toFixed(1)} ${pts[0].y.toFixed(1)} L ${pts[1].x.toFixed(1)} ${pts[1].y.toFixed(1)}`;
@@ -2044,8 +2044,17 @@
 
       let waypoints;
       let isStraight = false;
+      const customWpsRaw = positions && Array.isArray(positions[`W:${item.id}`]) ? positions[`W:${item.id}`] : null;
+      const customWps = customWpsRaw
+        ? customWpsRaw.filter((p) => p && Number.isFinite(p.x) && Number.isFinite(p.y)).map((p) => ({ x: p.x, y: p.y }))
+        : [];
+      const hasCustomWaypoints = customWps.length > 0;
 
-      if (!useGravity || (directHits.length === 0 && totalInPair === 1)) {
+      if (hasCustomWaypoints) {
+        // User-pinned fixed inflection points (bend points) take absolute precedence!
+        waypoints = [{ x: pSrc.x, y: pSrc.y }, ...customWps, { x: pDst.x, y: pDst.y }];
+        isStraight = false;
+      } else if (!useGravity || (directHits.length === 0 && totalInPair === 1)) {
         // Pure crisp straight line!
         waypoints = [{ x: pSrc.x, y: pSrc.y }, { x: pDst.x, y: pDst.y }];
         isStraight = true;
@@ -2187,6 +2196,8 @@
         ...item,
         isMirrored: false,
         isStraight,
+        hasCustomWaypoints,
+        customWaypoints: customWps,
         waypoints
       });
     }
@@ -2197,7 +2208,7 @@
       for (let pass = 0; pass < 12; pass++) {
         for (let i = 0; i < routed.length; i++) {
           const rA = routed[i];
-          if (rA.waypoints.length <= 2) continue; // Keep clear straight arcs strictly straight!
+          if (rA.hasCustomWaypoints || rA.waypoints.length <= 2) continue; // Keep clear straight arcs & user-fixed inflection points strictly locked!
           for (let k = 1; k < rA.waypoints.length - 1; k++) {
             const p = rA.waypoints[k];
             let fx = 0, fy = 0;
@@ -2322,7 +2333,7 @@
     // Finalize direct arcs (using crisp tautRoundedPath — straight where clear, rounded corners where bent!)
     const finalDirect = routed.map((r) => {
       const finalPts = [r.startPt, ...r.waypoints.slice(1, -1), r.endPt];
-      const pathD = tautRoundedPath(finalPts, 20);
+      const pathD = tautRoundedPath(finalPts, r.hasCustomWaypoints ? 14 : 20, Boolean(r.hasCustomWaypoints));
       const labelPt = polylineMidpoint(finalPts);
       return {
         ...r,
@@ -2694,22 +2705,37 @@
           const curveOff = count > 1 ? (aIdx % 2 === 0 ? 16 : -16) : 0;
           const mid = { x: (pS.x + pD.x) / 2 + cnx * curveOff, y: (pS.y + pD.y) / 2 + cny * curveOff };
 
-          const startPt = isOut
-            ? clipProtectedPort(trPt.x, trPt.y, false, trName, trObj, mid.x, mid.y, false, useGravity)
-            : clipMirrorPort(mNode, mid.x, mid.y, false);
-          const endPt = isOut
-            ? clipMirrorPort(mNode, mid.x, mid.y, true)
-            : clipProtectedPort(trPt.x, trPt.y, false, trName, trObj, mid.x, mid.y, true, useGravity);
+          const customMirWpsRaw = positions && Array.isArray(positions[`W:${item.id}`]) ? positions[`W:${item.id}`] : null;
+          const customMirWps = customMirWpsRaw
+            ? customMirWpsRaw.filter((p) => p && Number.isFinite(p.x) && Number.isFinite(p.y)).map((p) => ({ x: p.x, y: p.y }))
+            : [];
+          const hasCustomMirWps = customMirWps.length > 0;
+          const firstRef = hasCustomMirWps ? customMirWps[0] : mid;
+          const lastRef = hasCustomMirWps ? customMirWps[customMirWps.length - 1] : mid;
 
-          const finalPts = count > 1 ? [startPt, mid, endPt] : [startPt, endPt];
-          const pathD = tautRoundedPath(finalPts, 16);
-          const lx = count > 1 ? mid.x : startPt.x + (endPt.x - startPt.x) * 0.52;
-          const ly = count > 1 ? mid.y : startPt.y + (endPt.y - startPt.y) * 0.52;
+          const startPt = isOut
+            ? clipProtectedPort(trPt.x, trPt.y, false, trName, trObj, firstRef.x, firstRef.y, false, useGravity)
+            : clipMirrorPort(mNode, firstRef.x, firstRef.y, false);
+          const endPt = isOut
+            ? clipMirrorPort(mNode, lastRef.x, lastRef.y, true)
+            : clipProtectedPort(trPt.x, trPt.y, false, trName, trObj, lastRef.x, lastRef.y, true, useGravity);
+
+          const finalPts = hasCustomMirWps
+            ? [startPt, ...customMirWps, endPt]
+            : count > 1
+            ? [startPt, mid, endPt]
+            : [startPt, endPt];
+          const pathD = tautRoundedPath(finalPts, 14, hasCustomMirWps);
+          const labelPt = hasCustomMirWps ? polylineMidpoint(finalPts) : null;
+          const lx = labelPt ? labelPt.x : count > 1 ? mid.x : startPt.x + (endPt.x - startPt.x) * 0.52;
+          const ly = labelPt ? labelPt.y : count > 1 ? mid.y : startPt.y + (endPt.y - startPt.y) * 0.52;
 
           mirrorArcRouted.push({
             ...item,
             isMirrored: true,
             mirrorId: mNode.id,
+            hasCustomWaypoints: hasCustomMirWps,
+            customWaypoints: customMirWps,
             startPt,
             endPt,
             waypoints: finalPts,
@@ -2796,21 +2822,37 @@
             y: (mtNode.y + plPt.y) / 2 + cny * curveOff
           };
 
-          const startPt = clipMirrorPort(mtNode, mid.x, mid.y, false);
-          const endPt = clipProtectedPort(plPt.x, plPt.y, true, placeName, null, mid.x, mid.y, true, useGravity);
+          const pmirId = `${item.id}:pmir`;
+          const customPmirWpsRaw = positions && Array.isArray(positions[`W:${pmirId}`]) ? positions[`W:${pmirId}`] : null;
+          const customPmirWps = customPmirWpsRaw
+            ? customPmirWpsRaw.filter((p) => p && Number.isFinite(p.x) && Number.isFinite(p.y)).map((p) => ({ x: p.x, y: p.y }))
+            : [];
+          const hasCustomPmirWps = customPmirWps.length > 0;
+          const firstRef = hasCustomPmirWps ? customPmirWps[0] : mid;
+          const lastRef = hasCustomPmirWps ? customPmirWps[customPmirWps.length - 1] : mid;
 
-          const finalPts = count > 1 ? [startPt, mid, endPt] : [startPt, endPt];
-          const pathD = tautRoundedPath(finalPts, 16);
-          const lx = count > 1 ? mid.x : startPt.x + (endPt.x - startPt.x) * 0.52;
-          const ly = count > 1 ? mid.y : startPt.y + (endPt.y - startPt.y) * 0.52;
+          const startPt = clipMirrorPort(mtNode, firstRef.x, firstRef.y, false);
+          const endPt = clipProtectedPort(plPt.x, plPt.y, true, placeName, null, lastRef.x, lastRef.y, true, useGravity);
+
+          const finalPts = hasCustomPmirWps
+            ? [startPt, ...customPmirWps, endPt]
+            : count > 1
+            ? [startPt, mid, endPt]
+            : [startPt, endPt];
+          const pathD = tautRoundedPath(finalPts, 14, hasCustomPmirWps);
+          const labelPt = hasCustomPmirWps ? polylineMidpoint(finalPts) : null;
+          const lx = labelPt ? labelPt.x : count > 1 ? mid.x : startPt.x + (endPt.x - startPt.x) * 0.52;
+          const ly = labelPt ? labelPt.y : count > 1 ? mid.y : startPt.y + (endPt.y - startPt.y) * 0.52;
 
           placeInputArcs.push({
             ...item,
-            id: `${item.id}:pmir`,
+            id: pmirId,
             baseArcId: item.id,
             isMirrored: true,
             isPlaceInputMirror: true,
             mirrorId: mtNode.id,
+            hasCustomWaypoints: hasCustomPmirWps,
+            customWaypoints: customPmirWps,
             startPt,
             endPt,
             waypoints: finalPts,
